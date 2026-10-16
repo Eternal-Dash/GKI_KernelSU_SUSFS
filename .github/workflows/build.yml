@@ -730,6 +730,30 @@ jobs:
           fi
           echo "OK: 已改用 track_throne(false)，与 main 分支语义一致"
 
+      # ==================== 修复 selinux_hide.c 的弱符号（SUSFS/SukiSU 接口未对齐）====================
+      # 原因：SukiSU 的 selinux_hide.c 对 >=6.6 内核声明了两个 extern 符号：
+      #   security_dump_masked_av_fn / context_struct_compute_av_fn
+      # 而 SUSFS 的 50_add 补丁并不提供它们（唯一提供者是 SUSFS 给 Official KSU 准备的
+      # 10_enable_susfs_for_ksu.patch —— 该补丁在 SukiSU 变体下被 apply.sh 跳过）。
+      # 处理：把这两个声明改为弱符号。未定义时其地址为 0，代码中原有的
+      #       if ((void *)..._fn != NULL) 判断会自动走 else 分支，
+      #       调用本文件内自带的 static context_struct_compute_av 实现。
+      - name: 修复 selinux_hide.c 的弱符号（SUSFS/SukiSU 接口未对齐）
+        if: ${{ inputs.clean_build != true && inputs.enable_susfs }}
+        working-directory: ${{ env.KERNEL_ROOT }}
+        run: |
+          set -euo pipefail
+          F="KernelSU/kernel/feature/selinux_hide.c"
+          if [ ! -f "$F" ]; then echo "::warning::未找到 $F，跳过"; exit 0; fi
+          echo "--- 修复前 ---"
+          grep -n "extern void .*_fn" "$F" || true
+          sed -i 's/extern void security_dump_masked_av_fn(/extern __attribute__((weak)) void security_dump_masked_av_fn(/' "$F"
+          sed -i 's/extern void context_struct_compute_av_fn(/extern __attribute__((weak)) void context_struct_compute_av_fn(/' "$F"
+          echo "--- 修复后 ---"
+          grep -n "context_struct_compute_av_fn\|security_dump_masked_av_fn" "$F" | head -6 || true
+          grep -q "weak.*context_struct_compute_av_fn" "$F" || { echo "::error::弱符号修复未生效"; exit 1; }
+          echo "OK: 两个 _fn 已改为弱符号（未定义时地址为 0，运行时自动走内置实现）"
+
       - name: 克隆 SUSFS 源码
         if: inputs.enable_susfs
         run: |
