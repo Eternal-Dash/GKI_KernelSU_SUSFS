@@ -1,3 +1,15 @@
+# ==================== 自定义提交配置 ====================
 custom=true
-gki-android15-6.6=2d11d711de80f0f749b3055f8da8f7b9682454e4
-sukisu=fd2a85151c8312fd9b4237db9ba827dcea692228
+
+# ==================== SUSFS 各分支的 commit hash ====================
+# 留空 = 用最新
+gki-android12-5.10=
+gki-android13-5.15=
+gki-android14-6.1=
+gki-android15-6.6=
+gki-android16-6.12=
+
+# ==================== SukiSU 的 commit hash ====================
+# 钉到 builtin 分支的 v4.2.1 版本提交
+# （其后的提交引入动态管理器，而该处存在上游编译错误）
+sukisu=1ba8414eab9797e61696560699b1f63850d3861a
