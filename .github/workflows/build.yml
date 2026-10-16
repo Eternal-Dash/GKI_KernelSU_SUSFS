@@ -684,6 +684,33 @@ jobs:
           echo "已更新 get_ksu_version_full 模板: $VERSION_TEMPLATE"
 
       # 在内核源码和 KSU 准备完成后再获取 SUSFS，避免在前期集中拉取。
+      # ==================== 修正 builtin 分支 UAPI 版本号 (2 -> 5) ====================
+      # 依据：上游 main / builtin 两分支并行维护时漏同步了版本号。
+      #   UAPI 3 (scoped su-session driver fd) → builtin 已实现
+      #   UAPI 4 (GET_INFO_FLAG_BUNDLED)       → 对内建内核不适用
+      #   UAPI 5 (EVENT_SERVICES start/skip)   → builtin 已实现
+      # 补上号属于纠正漏同步，不是虚报接口能力。
+      - name: 修正 builtin 分支 UAPI 版本号 (2 -> 5)
+        if: ${{ inputs.clean_build != true && inputs.enable_susfs }}
+        working-directory: ${{ env.KERNEL_ROOT }}
+        run: |
+          set -euo pipefail
+          F="KernelSU/kernel/include/uapi/supercall.h"
+          if [ ! -f "$F" ]; then echo "::error::未找到 $F"; exit 1; fi
+          echo "--- 修改前 ---"
+          grep -n "KERNEL_SU_UAPI_VERSION" "$F"
+          if grep -q "KERNEL_SU_UAPI_VERSION, 2" "$F"; then
+            sed -i "s/KERNEL_SU_UAPI_VERSION, 2/KERNEL_SU_UAPI_VERSION, 5/" "$F"
+          else
+            sed -i -E "s/(KERNEL_SU_UAPI_VERSION,[[:space:]]*)2/\1""5/" "$F"
+          fi
+          echo "--- 修改后 ---"
+          grep -n "KERNEL_SU_UAPI_VERSION" "$F"
+          if ! grep -qE "KERNEL_SU_UAPI_VERSION,[[:space:]]*5" "$F"; then
+            echo "::error::UAPI 版本号修改未生效"; exit 1
+          fi
+          echo "OK: builtin UAPI 已纠正为 5"
+
       - name: 克隆 SUSFS 源码
         if: inputs.enable_susfs
         run: |
