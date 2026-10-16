@@ -730,29 +730,42 @@ jobs:
           fi
           echo "OK: 已改用 track_throne(false)，与 main 分支语义一致"
 
-      # ==================== 修复 selinux_hide.c 的弱符号（SUSFS/SukiSU 接口未对齐）====================
-      # 原因：SukiSU 的 selinux_hide.c 对 >=6.6 内核声明了两个 extern 符号：
+      # ==================== 消除 selinux_hide.c 对外部 _fn 符号的引用 ====================
+      # 背景：SukiSU 的 selinux_hide.c 对 >=6.6 内核声明并使用了两个外部符号
       #   security_dump_masked_av_fn / context_struct_compute_av_fn
-      # 而 SUSFS 的 50_add 补丁并不提供它们（唯一提供者是 SUSFS 给 Official KSU 准备的
-      # 10_enable_susfs_for_ksu.patch —— 该补丁在 SukiSU 变体下被 apply.sh 跳过）。
-      # 处理：把这两个声明改为弱符号。未定义时其地址为 0，代码中原有的
-      #       if ((void *)..._fn != NULL) 判断会自动走 else 分支，
-      #       调用本文件内自带的 static context_struct_compute_av 实现。
-      - name: 修复 selinux_hide.c 的弱符号（SUSFS/SukiSU 接口未对齐）
+      # 其提供者是 SUSFS 为 Official KSU 准备的 10_enable_susfs_for_ksu.patch，
+      # 而该补丁在 SukiSU 变体下被 apply.sh 跳过。于是：
+      #   保留普通 extern → 链接期 undefined symbol
+      #   改成弱符号     → 运行时解析需要 GOT/PLT，内核不支持 → Unexpected GOT/PLT entries
+      # 故直接消除引用：
+      #   1) 删除两个 extern 声明
+      #   2) dump_masked_av 的调用（注释为 audit，仅日志用途）整段删除
+      #   3) compute_av 的 if/else 简化为直接调用本文件内自带的 static 实现
+      - name: 消除 selinux_hide.c 对外部 _fn 符号的引用
         if: ${{ inputs.clean_build != true && inputs.enable_susfs }}
         working-directory: ${{ env.KERNEL_ROOT }}
         run: |
           set -euo pipefail
           F="KernelSU/kernel/feature/selinux_hide.c"
           if [ ! -f "$F" ]; then echo "::warning::未找到 $F，跳过"; exit 0; fi
-          echo "--- 修复前 ---"
-          grep -n "extern void .*_fn" "$F" || true
-          sed -i 's/extern void security_dump_masked_av_fn(/extern __attribute__((weak)) void security_dump_masked_av_fn(/' "$F"
-          sed -i 's/extern void context_struct_compute_av_fn(/extern __attribute__((weak)) void context_struct_compute_av_fn(/' "$F"
-          echo "--- 修复后 ---"
-          grep -n "context_struct_compute_av_fn\|security_dump_masked_av_fn" "$F" | head -6 || true
-          grep -q "weak.*context_struct_compute_av_fn" "$F" || { echo "::error::弱符号修复未生效"; exit 1; }
-          echo "OK: 两个 _fn 已改为弱符号（未定义时地址为 0，运行时自动走内置实现）"
+          echo "--- 处理前 ---"
+          grep -n "_av_fn" "$F" || true
+          python3 - "$F" <<'PYEOF'
+          import re, sys
+          p = sys.argv[1]
+          s = open(p, encoding="utf-8").read()
+          before = len(s.splitlines())
+          for sym in ("security_dump_masked_av_fn", "context_struct_compute_av_fn"):
+              s = re.sub(r"[ \t]*extern\s+void\s+" + sym + r"\s*\([^;]*?\)\s*;\n", "", s, flags=re.S)
+          s = re.sub(r"[ \t]*if\s*\(\(void\s*\*\)security_dump_masked_av_fn\s*!=\s*NULL\)\s*\n[ \t]*security_dump_masked_av_fn\([^;]*?\);\n", "", s, flags=re.S)
+          s = re.sub(r"[ \t]*if\s*\(\(void\s*\*\)context_struct_compute_av_fn\s*!=\s*NULL\)\s*\{\s*\n[ \t]*context_struct_compute_av_fn\([^;]*?\);\s*\n[ \t]*\}\s*else\s*\{\s*\n([ \t]*)(context_struct_compute_av\([^;]*?\);)\s*\n[ \t]*\}\n", r"\1\2\n", s, flags=re.S)
+          open(p, "w", encoding="utf-8").write(s)
+          print("removed lines:", before - len(s.splitlines()))
+          PYEOF
+          echo "--- 处理后 ---"
+          grep -n "context_struct_compute_av(" "$F" || true
+          if grep -q "_av_fn" "$F"; then echo "::error::仍存在外部 _fn 引用"; exit 1; fi
+          echo "OK: 已消除外部符号引用，仅使用文件内自带的 static 实现"
 
       - name: 克隆 SUSFS 源码
         if: inputs.enable_susfs
