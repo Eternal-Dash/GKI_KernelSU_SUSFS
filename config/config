@@ -1,8 +1,22 @@
 # ==================== 自定义提交配置 ====================
+#
+# 本文件用于把 SUSFS / SukiSU 固定到指定提交，避免上游变动导致构建结果漂移。
+# 修改者：Eternal-Dash（2026-10）—— 补充生效条件说明与钉死原因，逻辑未变。
+#
+# 生效条件（重要）：
+#   · custom=true 且变体为 SukiSU 才会读取下面的 sukisu 项
+#   · 且必须启用 SUSFS（ksu_mode 不是“禁用SUSFS”/“禁用KSU”）
+#     因为下面钉的提交来自 builtin 分支，与 main 分支源码结构不通用；
+#     若在“关闭 SUSFS”时也套用它，会得到一个“关掉了 SUSFS 却仍内置 SUSFS”的内核。
+#
+# 取值说明：留空 = 使用该分支最新提交
+# ================================================================
+
+# 是否启用自定义提交 (true/false)
 custom=true
 
 # ==================== SUSFS 各分支的 commit hash ====================
-# 留空 = 用最新
+# 仅当 custom=true 时生效；留空 = 用最新
 gki-android12-5.10=
 gki-android13-5.15=
 gki-android14-6.1=
@@ -10,6 +24,14 @@ gki-android15-6.6=
 gki-android16-6.12=
 
 # ==================== SukiSU 的 commit hash ====================
-# 钉到 builtin 分支的 v4.2.1 版本提交
-# （其后的提交引入动态管理器，而该处存在上游编译错误）
+# 仅当 custom=true 且使用 SukiSU 变体、且启用 SUSFS 时生效
+#
+# 当前钉的是 builtin 分支的 v4.2.1 版本提交：
+#   · 只有 builtin 分支内置 SUSFS（main 分支不含 SUSFS，故不要改成 main 的提交）
+#   · 其后的提交引入了动态管理器，而该处存在上游编译错误，暂不跟进
+#
+# 换提交前请先确认：
+#   1) 仍属于 builtin 分支
+#   2) kernel/include/uapi/supercall.h 仍存在（否则 UAPI 修补会跳过、可能与管理器错配）
+#   3) kernel/feature/selinux_hide.c 的写法仍与修补正则匹配（看构建日志是否输出“已消除外部符号引用”）
 sukisu=1ba8414eab9797e61696560699b1f63850d3861a
