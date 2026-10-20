@@ -1,3 +1,25 @@
+# =============================================================================
+# GKI KernelSU + SUSFS 内核自动构建
+#
+# 上游来源：
+#   WildKernels/GKI_KernelSU_SUSFS (main)
+#     └── zzh20188/GKI_KernelSU_SUSFS (dev)   ← 本仓库的直接上游
+#           └── Eternal-Dash/GKI_KernelSU_SUSFS (dev)  ← 本 fork
+#
+# 本文件相对上游 zzh20188/GKI_KernelSU_SUSFS 的修改（GPL-2.0 第 2 条 a 款要求的修改声明）：
+#   修改者：Eternal-Dash  <https://github.com/Eternal-Dash>
+#   时间  ：2026-10-15 ~ 2026-10-20
+#   内容  ：
+#     1. 新增 SukiSU builtin（内置 SUSFS）分支的三处构建期修补：
+#        UAPI 版本号对齐、pkg_observer.c 编译错误、selinux_hide.c 外部 _fn 符号引用；
+#        三处修补仅在「SukiSU + 启用 SUSFS」时生效，且找不到上游特征时自动跳过。
+#     2. 恢复并扩展 KPM 步骤（enabled / patched），补上 Image.lz4 重建与解压自检；
+#        支持集合与 CONFIG_KPM 注入保持一致（SukiSU / BakaSU / Next）。
+#     3. config/config 中的 sukisu 固定提交仅在启用 SUSFS 时生效，避免分支语义串味。
+#   说明  ：以上仅为构建流程的适配改动，内核 / SUSFS / KernelSU 源码本身未作修改，
+#          相关版权归各自作者所有。详见 CREDITS.md。
+# =============================================================================
+
 name: 内核构建流程
 
 permissions:
@@ -80,6 +102,12 @@ on:
         required: true
         type: boolean
         default: true
+      # 构建期源码修补开关：为 true 时跳过下方 builtin 分支的三处修补，
+      # 便于对比「纯上游源码」的构建结果（默认 false，即正常修补）。
+      clean_build:
+        required: false
+        type: boolean
+        default: false
       supp_op:
         required: false
         type: boolean
@@ -566,21 +594,39 @@ jobs:
               ;;
           esac
 
-          # 检查自定义提交 (仅对 SukiSU 生效)
+          # 检查自定义提交（仅对 SukiSU + 启用 SUSFS 生效）
+          #
+          # 修改说明（本 fork）：
+          #   config 中固定的 sukisu 提交来自上游 builtin 分支，而 builtin 与 main 的源码
+          #   结构/版本号并不通用。若「关闭 SUSFS」时也套用该提交，就会得到一个
+          #   「关掉了 SUSFS 却仍内置 SUSFS」的内核，与开关语义冲突，故补 enable_susfs 判断。
           CONFIG_FILE="config/config"
           if [ -f "$CONFIG_FILE" ]; then
-            CUSTOM_ENABLED=$(grep "^custom=" "$CONFIG_FILE" | cut -d'=' -f2)
+            CUSTOM_ENABLED=$(grep "^custom=" "$CONFIG_FILE" | cut -d'=' -f2- | tr -d ' \r\t')
             if [ "$CUSTOM_ENABLED" == "true" ] && [ "$variant_input" == "SukiSU" ]; then
-              SUKISU_COMMIT=$(grep "^sukisu=" "$CONFIG_FILE" | cut -d'=' -f2)
-              if [ -n "$SUKISU_COMMIT" ]; then
-                BRANCH="-s $SUKISU_COMMIT"
-                echo "SukiSU 使用自定义提交: $SUKISU_COMMIT"
+              if [ "${{ inputs.enable_susfs }}" != "true" ]; then
+                echo "::notice::未启用 SUSFS，忽略 config 中的 sukisu 固定提交（该提交属于 builtin 分支）"
+              else
+                SUKISU_COMMIT=$(grep "^sukisu=" "$CONFIG_FILE" | cut -d'=' -f2- | tr -d ' \r\t')
+                if [ -n "$SUKISU_COMMIT" ]; then
+                  BRANCH="-s $SUKISU_COMMIT"
+                  echo "SukiSU 使用自定义提交: $SUKISU_COMMIT"
+                fi
               fi
             fi
           fi
 
           echo "BRANCH=$BRANCH" >> $GITHUB_ENV
           echo "KSU 分支: $BRANCH"
+
+          # builtin（内置 SUSFS）标记：后续三处构建期修补只在该场景执行，
+          # 避免误伤 Official / Next / BakaSU 以及老版本 SukiSU。
+          if [ "$variant_input" == "SukiSU" ] && [ "${{ inputs.enable_susfs }}" == "true" ]; then
+            echo "KSU_BUILTIN_SUSFS=true" >> $GITHUB_ENV
+            echo "已标记 KSU_BUILTIN_SUSFS=true（SukiSU builtin 分支）"
+          else
+            echo "KSU_BUILTIN_SUSFS=false" >> $GITHUB_ENV
+          fi
 
       - name: 添加 KernelSU
         if: inputs.ksu_mode != '禁用KSU'
@@ -684,87 +730,180 @@ jobs:
           echo "已更新 get_ksu_version_full 模板: $VERSION_TEMPLATE"
 
       # 在内核源码和 KSU 准备完成后再获取 SUSFS，避免在前期集中拉取。
-      # ==================== 修正 builtin 分支 UAPI 版本号 (2 -> 5) ====================
-      # 依据：上游 main / builtin 两分支并行维护时漏同步了版本号。
-      #   UAPI 3 (scoped su-session driver fd) → builtin 已实现
-      #   UAPI 4 (GET_INFO_FLAG_BUNDLED)       → 对内建内核不适用
-      #   UAPI 5 (EVENT_SERVICES start/skip)   → builtin 已实现
-      # 补上号属于纠正漏同步，不是虚报接口能力。
-      - name: 修正 builtin 分支 UAPI 版本号 (2 -> 5)
-        if: ${{ inputs.clean_build != true && inputs.enable_susfs }}
-        working-directory: ${{ env.KERNEL_ROOT }}
-        run: |
-          set -euo pipefail
-          F="KernelSU/kernel/include/uapi/supercall.h"
-          if [ ! -f "$F" ]; then echo "::error::未找到 $F"; exit 1; fi
-          echo "--- 修改前 ---"
-          grep -n "KERNEL_SU_UAPI_VERSION" "$F"
-          if grep -q "KERNEL_SU_UAPI_VERSION, 2" "$F"; then
-            sed -i "s/KERNEL_SU_UAPI_VERSION, 2/KERNEL_SU_UAPI_VERSION, 5/" "$F"
-          else
-            sed -i -E "s/(KERNEL_SU_UAPI_VERSION,[[:space:]]*)2/\1""5/" "$F"
-          fi
-          echo "--- 修改后 ---"
-          grep -n "KERNEL_SU_UAPI_VERSION" "$F"
-          if ! grep -qE "KERNEL_SU_UAPI_VERSION,[[:space:]]*5" "$F"; then
-            echo "::error::UAPI 版本号修改未生效"; exit 1
-          fi
-          echo "OK: builtin UAPI 已纠正为 5"
+      #
+      # ================= 构建期修补：仅 SukiSU builtin（内置 SUSFS）场景 =================
+      # 触发条件：SukiSU 变体 + 启用 SUSFS（由「确定 KernelSU 分支」步骤写出的
+      # KSU_BUILTIN_SUSFS=true 判定），不会影响 Official / Next / BakaSU / 老版本 SukiSU。
+      # 设计原则：三段都按「上游源码特征」定位，找不到特征就跳过、不报错；
+      #           上游修复后这些步骤会自动变成空操作，不需要跟着改工作流。
+      # 修改者：Eternal-Dash（2026-10，见 CREDITS.md）
 
-      # ==================== 修复 builtin 分支上游编译错误 ====================
-      # 上游 builtin 分支的 pkg_observer.c 使用了不存在的常量 TRACK_THRONE_FORCE_SYNCHRONOUS，
-      # 而 track_throne() 的签名是 void track_throne(bool prune_only)。
-      # main 分支同位置传的是 false，此处按同样语义修正（仅此一处，无其他改动）。
-      - name: 修复 builtin 分支上游编译错误 (pkg_observer)
-        if: ${{ inputs.clean_build != true && inputs.enable_susfs }}
+      # ---------------------------- 1. UAPI 版本号 ----------------------------
+      # 依据：上游 main / builtin 两分支并行维护，builtin 漏同步了版本号。
+      #   UAPI 3（scoped su-session driver fd）        → 该提交已实现
+      #   UAPI 4（KSU_GET_INFO_FLAG_BUNDLED）          → 该提交未实现，故不声明
+      #   UAPI 5（EVENT_SERVICES 的 start/skip 结果）  → 该提交已实现
+      # 因此只补到 5：属于「纠正漏同步」，不是虚报接口能力。
+      # 若上游给到 >= 5 的更高值，本步自动跳过且绝不降级。
+      - name: 对齐 builtin 分支 UAPI 版本号
+        if: ${{ !inputs.clean_build && inputs.enable_susfs }}
         working-directory: ${{ env.KERNEL_ROOT }}
         run: |
           set -euo pipefail
+          if [ "${KSU_BUILTIN_SUSFS:-false}" != "true" ]; then
+            echo "非 SukiSU builtin（内置 SUSFS）场景，跳过本步"
+            exit 0
+          fi
+          F="KernelSU/kernel/include/uapi/supercall.h"
+          TARGET_UAPI=5
+
+          if [ ! -f "$F" ]; then
+            echo "::warning::未找到 $F，跳过 UAPI 版本号对齐"
+            exit 0
+          fi
+
+          uapi_of() {
+            grep -oE 'KERNEL_SU_UAPI_VERSION[^0-9]*[0-9]+' "$1" | grep -oE '[0-9]+$' | head -n1
+          }
+
+          echo "--- 修改前 ---"
+          grep -n "KERNEL_SU_UAPI_VERSION" "$F" || true
+
+          CUR="$(uapi_of "$F")"
+          if [ -z "${CUR:-}" ]; then
+            echo "::warning::无法解析 KERNEL_SU_UAPI_VERSION（上游写法可能已变），跳过"
+            exit 0
+          fi
+          if [ "$CUR" -ge "$TARGET_UAPI" ]; then
+            echo "当前 UAPI=$CUR，已不低于 $TARGET_UAPI，保持上游原值不动"
+            exit 0
+          fi
+
+          sed -i -E "s/(KERNEL_SU_UAPI_VERSION[^0-9]*)${CUR}([^0-9]|$)/\1${TARGET_UAPI}\2/" "$F"
+
+          NEW="$(uapi_of "$F")"
+          echo "--- 修改后 ---"
+          grep -n "KERNEL_SU_UAPI_VERSION" "$F" || true
+          if [ "$NEW" != "$TARGET_UAPI" ]; then
+            echo "::error::UAPI 版本号对齐失败（当前 ${NEW:-无法解析}）"
+            exit 1
+          fi
+          echo "OK: UAPI 已对齐到 $TARGET_UAPI"
+
+      # ---------------------- 2. pkg_observer.c 上游编译错误 ----------------------
+      # 上游 builtin 分支使用了不存在的常量 TRACK_THRONE_FORCE_SYNCHRONOUS，
+      # 而 track_throne() 的签名是 void track_throne(bool prune_only)；
+      # main 分支同位置传的是 false，此处按相同语义修正（仅此一处）。
+      - name: 修复 builtin 分支上游编译错误 (pkg_observer)
+        if: ${{ !inputs.clean_build && inputs.enable_susfs }}
+        working-directory: ${{ env.KERNEL_ROOT }}
+        run: |
+          set -euo pipefail
+          if [ "${KSU_BUILTIN_SUSFS:-false}" != "true" ]; then
+            echo "非 SukiSU builtin（内置 SUSFS）场景，跳过本步"
+            exit 0
+          fi
           F="KernelSU/kernel/manager/pkg_observer.c"
-          if [ ! -f "$F" ]; then echo "::warning::未找到 $F，跳过"; exit 0; fi
-          echo "--- 修复前 ---"; grep -n "TRACK_THRONE_FORCE_SYNCHRONOUS" "$F" || true
+
+          if [ ! -f "$F" ]; then
+            echo "::warning::未找到 $F，跳过"
+            exit 0
+          fi
+          if ! grep -q "TRACK_THRONE_FORCE_SYNCHRONOUS" "$F"; then
+            echo "未出现 TRACK_THRONE_FORCE_SYNCHRONOUS（上游可能已修复），跳过"
+            exit 0
+          fi
+
+          echo "--- 修复前 ---"
+          grep -n "TRACK_THRONE_FORCE_SYNCHRONOUS" "$F" || true
           sed -i "s/track_throne(TRACK_THRONE_FORCE_SYNCHRONOUS)/track_throne(false)/g" "$F"
-          echo "--- 修复后 ---"; grep -n "track_throne(" "$F" || true
+          echo "--- 修复后 ---"
+          grep -n "track_throne(" "$F" || true
+
           if grep -q "TRACK_THRONE_FORCE_SYNCHRONOUS" "$F"; then
-            echo "::error::修复未生效"; exit 1
+            echo "::error::修复未生效"
+            exit 1
           fi
           echo "OK: 已改用 track_throne(false)，与 main 分支语义一致"
 
-      # ==================== 消除 selinux_hide.c 对外部 _fn 符号的引用 ====================
+      # ------------------ 3. selinux_hide.c 的外部 _fn 符号引用 ------------------
       # 背景：SukiSU 的 selinux_hide.c 对 >=6.6 内核声明并使用了两个外部符号
       #   security_dump_masked_av_fn / context_struct_compute_av_fn
       # 其提供者是 SUSFS 为 Official KSU 准备的 10_enable_susfs_for_ksu.patch，
-      # 而该补丁在 SukiSU 变体下被 apply.sh 跳过。于是：
+      # 而该补丁在 SukiSU 变体下并不应用（见 scripts/susfs_fixes/apply.sh）。于是：
       #   保留普通 extern → 链接期 undefined symbol
       #   改成弱符号     → 运行时解析需要 GOT/PLT，内核不支持 → Unexpected GOT/PLT entries
-      # 故直接消除引用：
+      # 故直接消除引用，改用本文件自带的 static 实现：
       #   1) 删除两个 extern 声明
-      #   2) dump_masked_av 的调用（注释为 audit，仅日志用途）整段删除
-      #   3) compute_av 的 if/else 简化为直接调用本文件内自带的 static 实现
+      #   2) dump_masked_av 的调用（仅审计日志用途）整段删除
+      #   3) compute_av 的 if/else 简化为直接调用 static 实现
       - name: 消除 selinux_hide.c 对外部 _fn 符号的引用
-        if: ${{ inputs.clean_build != true && inputs.enable_susfs }}
+        if: ${{ !inputs.clean_build && inputs.enable_susfs }}
         working-directory: ${{ env.KERNEL_ROOT }}
         run: |
           set -euo pipefail
+          if [ "${KSU_BUILTIN_SUSFS:-false}" != "true" ]; then
+            echo "非 SukiSU builtin（内置 SUSFS）场景，跳过本步"
+            exit 0
+          fi
           F="KernelSU/kernel/feature/selinux_hide.c"
-          if [ ! -f "$F" ]; then echo "::warning::未找到 $F，跳过"; exit 0; fi
+
+          if [ ! -f "$F" ]; then
+            echo "::warning::未找到 $F，跳过"
+            exit 0
+          fi
+          if ! grep -q "_av_fn" "$F"; then
+            echo "未出现 _av_fn 引用（上游可能已改为函数指针），跳过"
+            exit 0
+          fi
+
           echo "--- 处理前 ---"
           grep -n "_av_fn" "$F" || true
           python3 - "$F" <<'PYEOF'
-          import re, sys
-          p = sys.argv[1]
-          s = open(p, encoding="utf-8").read()
-          before = len(s.splitlines())
+          import re
+          import sys
+
+          path = sys.argv[1]
+          src = open(path, encoding="utf-8").read()
+          new = src
+
           for sym in ("security_dump_masked_av_fn", "context_struct_compute_av_fn"):
-              s = re.sub(r"[ \t]*extern\s+void\s+" + sym + r"\s*\([^;]*?\)\s*;\n", "", s, flags=re.S)
-          s = re.sub(r"[ \t]*if\s*\(\(void\s*\*\)security_dump_masked_av_fn\s*!=\s*NULL\)\s*\n[ \t]*security_dump_masked_av_fn\([^;]*?\);\n", "", s, flags=re.S)
-          s = re.sub(r"[ \t]*if\s*\(\(void\s*\*\)context_struct_compute_av_fn\s*!=\s*NULL\)\s*\{\s*\n[ \t]*context_struct_compute_av_fn\([^;]*?\);\s*\n[ \t]*\}\s*else\s*\{\s*\n([ \t]*)(context_struct_compute_av\([^;]*?\);)\s*\n[ \t]*\}\n", r"\1\2\n", s, flags=re.S)
-          open(p, "w", encoding="utf-8").write(s)
-          print("removed lines:", before - len(s.splitlines()))
+              new = re.sub(
+                  r"[ \t]*extern\s+void\s+" + sym + r"\s*\([^;]*?\)\s*;\n",
+                  "",
+                  new,
+                  flags=re.S,
+              )
+          new = re.sub(
+              r"[ \t]*if\s*\(\(void\s*\*\)security_dump_masked_av_fn\s*!=\s*NULL\)\s*\n"
+              r"[ \t]*security_dump_masked_av_fn\([^;]*?\);\n",
+              "",
+              new,
+              flags=re.S,
+          )
+          new = re.sub(
+              r"[ \t]*if\s*\(\(void\s*\*\)context_struct_compute_av_fn\s*!=\s*NULL\)\s*\{\s*\n"
+              r"[ \t]*context_struct_compute_av_fn\([^;]*?\);\s*\n[ \t]*\}\s*else\s*\{\s*\n"
+              r"([ \t]*)(context_struct_compute_av\([^;]*?\);)\s*\n[ \t]*\}\n",
+              r"\1\2\n",
+              new,
+              flags=re.S,
+          )
+
+          if new == src:
+              print("未匹配到需要修改的结构，未写入")
+              sys.exit(0)
+
+          open(path, "w", encoding="utf-8").write(new)
+          print("removed lines:", len(src.splitlines()) - len(new.splitlines()))
           PYEOF
+
           echo "--- 处理后 ---"
           grep -n "context_struct_compute_av(" "$F" || true
-          if grep -q "_av_fn" "$F"; then echo "::error::仍存在外部 _fn 引用"; exit 1; fi
+          if grep -q "_av_fn" "$F"; then
+            echo "::error::仍存在外部 _fn 引用，链接期会失败"
+            exit 1
+          fi
           echo "OK: 已消除外部符号引用，仅使用文件内自带的 static 实现"
 
       - name: 克隆 SUSFS 源码
@@ -1467,13 +1606,22 @@ jobs:
             echo "CONFIG_KSU=y" >> "$DEFCONFIG"
           fi
 
-          if [ "${{ inputs.ksu_mode }}" != "禁用KSU" ] && { [ "${{ inputs.ksu_variant }}" == "SukiSU" ] || [ "${{ inputs.ksu_variant }}" == "SukiSU(40726)" ] || [ "${{ inputs.ksu_variant }}" == "SukiSU(40548)" ] || [ "${{ inputs.ksu_variant }}" == "BakaSU" ] || [ "${{ inputs.ksu_variant }}" == "Next" ]; }; then
-            if [[ "${{ inputs.use_kpm }}" == enabled* ]] || [[ "${{ inputs.use_kpm }}" == patched* ]]; then
+          # KPM：只有「会注入 KernelPatch 宿主」的变体才写 CONFIG_KPM，
+          # 否则会产出「有 CONFIG_KPM、没有宿主」的半成品内核（KPM 模块必然加载失败）。
+          KPM_SUPPORTED=false
+          case "${{ inputs.ksu_variant }}" in
+            "SukiSU"|"BakaSU"|"Next") KPM_SUPPORTED=true ;;
+          esac
+          if [ "${{ inputs.ksu_mode }}" != "禁用KSU" ] && { [[ "${{ inputs.use_kpm }}" == enabled* ]] || [[ "${{ inputs.use_kpm }}" == patched* ]]; }; then
+            if [ "$KPM_SUPPORTED" != "true" ]; then
+              echo "::warning::变体 ${{ inputs.ksu_variant }} 没有 KernelPatch 宿主注入路径，已忽略 KPM 开关"
+            else
               if ! grep -RqsE '^[[:space:]]*config[[:space:]]+KPM([[:space:]]|$)' common KernelSU 2>/dev/null; then
                 echo "错误: 已请求启用 KPM，但当前 KernelSU 代码未声明 CONFIG_KPM" >&2
                 exit 1
               fi
               echo "CONFIG_KPM=y" >> "$DEFCONFIG"
+              echo "KPM: 已写入 CONFIG_KPM=y（稍后注入 KernelPatch 宿主）"
             fi
           fi
 
@@ -1716,26 +1864,74 @@ jobs:
           retention-days: 7
           compression-level: 9
 
+      # ==================== KPM：CONFIG_KPM + KernelPatch 宿主注入 ====================
+      # 修改说明（本 fork）：
+      #   1. patch_linux 只产出 Image(oImage)，不会重建 Image.lz4；而 boot-lz4.img 用的是
+      #      Image.lz4。若不重建，刷 lz4 镜像的用户会拿到「有 CONFIG_KPM、没有 KernelPatch
+      #      宿主」的内核。故此处补上 Image.lz4 的重建与解压自检。
+      #   2. 产物目录不再按 android/kernel 组合猜（原逻辑在 android12/13 + 6.6 时
+      #      TARGET_PATH 为空，cp 会落到根目录），改为按「目录下是否存在 Image」探测。
+      #   3. 支持集合与 CONFIG_KPM 注入保持一致：SukiSU / BakaSU / Next。
       - name: 应用 KPM 补丁 (SukiSU/BakaSU/Next)
-        if: (startsWith(inputs.use_kpm, 'enabled') || startsWith(inputs.use_kpm, 'patched')) && (inputs.ksu_variant == 'SukiSU' || inputs.ksu_variant == 'BakaSU' || inputs.ksu_variant == 'Next')
+        if: ${{ (startsWith(inputs.use_kpm, 'enabled') || startsWith(inputs.use_kpm, 'patched')) && (inputs.ksu_variant == 'SukiSU' || inputs.ksu_variant == 'BakaSU' || inputs.ksu_variant == 'Next') }}
         run: |
-          case "${{ inputs.android_version }}" in
-            "android12"|"android13")
-              if [ "${{ inputs.kernel_version }}" != "6.6" ]; then
-                TARGET_PATH="$KERNEL_ROOT/out/${{ inputs.android_version }}-${{ inputs.kernel_version }}/dist"
-              fi
-              ;;
-            "android14"|"android15"|"android16")
-              TARGET_PATH="$KERNEL_ROOT/bazel-bin/common/kernel_aarch64/"
-              ;;
-          esac
+          set -euo pipefail
 
-          cp -r $SUKISU_PATCHES/kpm/patch_linux "$TARGET_PATH/patch"
+          PATCH_BIN="${SUKISU_PATCHES}/kpm/patch_linux"
+          if [ ! -f "$PATCH_BIN" ]; then
+            echo "::error::未找到 KPM 补丁程序: $PATCH_BIN"
+            exit 1
+          fi
+
+          TARGET_PATH=""
+          for d in \
+            "$KERNEL_ROOT/out/${{ inputs.android_version }}-${{ inputs.kernel_version }}/dist" \
+            "$KERNEL_ROOT/out/${{ inputs.android_version }}-${{ inputs.kernel_version }}" \
+            "$KERNEL_ROOT/bazel-bin/common/kernel_aarch64"; do
+            if [ -f "$d/Image" ]; then
+              TARGET_PATH="$d"
+              break
+            fi
+          done
+          if [ -z "$TARGET_PATH" ]; then
+            echo "::error::未找到编译产物 Image，无法注入 KernelPatch 宿主"
+            exit 1
+          fi
+          echo "KPM 目标目录: $TARGET_PATH"
+
           cd "$TARGET_PATH"
-          chmod 777 patch
+          rm -rf ./patch
+          cp -f "$PATCH_BIN" ./patch
+          chmod 777 ./patch
           ./patch
-          rm -rf Image
+
+          if [ ! -f oImage ]; then
+            echo "::error::patch_linux 未产出 oImage，KernelPatch 宿主注入失败"
+            exit 1
+          fi
+          rm -f Image
           mv oImage Image
+          echo "OK: Image 已注入 KernelPatch 宿主"
+
+          # 用打过补丁的 Image 重建 Image.lz4，保证 lz4 镜像与 boot.img 内核一致
+          if ! command -v lz4 >/dev/null 2>&1; then
+            sudo apt-get update -qq >/dev/null 2>&1 || true
+            sudo apt-get install -y -qq lz4 >/dev/null 2>&1 || true
+          fi
+          if command -v lz4 >/dev/null 2>&1; then
+            # GKI 的 Image.lz4 使用 legacy 帧格式（lz4 -l），bootloader 才能解压
+            lz4 -l -12 --favor-decSpeed -f Image Image.lz4
+            if lz4 -d -c Image.lz4 | cmp - Image >/dev/null 2>&1; then
+              echo "OK: Image.lz4 已由打过补丁的 Image 重建，解压校验一致"
+            else
+              echo "::error::Image.lz4 重建后解压校验失败"
+              exit 1
+            fi
+          else
+            echo "::warning::环境缺少 lz4，删除未含 KPM 的 Image.lz4，并跳过 lz4 镜像构建"
+            rm -f Image.lz4
+            echo "SKIP_LZ4_IMAGE=true" >> $GITHUB_ENV
+          fi
 
       - name: 准备 Boot 镜像
         run: |
@@ -1748,9 +1944,14 @@ jobs:
           fi
 
           cp "$SRC_DIR/Image" ./bootimgs/
-          cp "$SRC_DIR/Image.lz4" ./bootimgs/
           cp "$SRC_DIR/Image" ./
-          cp "$SRC_DIR/Image.lz4" ./
+          # Image.lz4 可能不存在（KPM 步骤检测到缺少 lz4 时会删掉它，避免发出未含 KPM 的镜像）
+          if [ -f "$SRC_DIR/Image.lz4" ]; then
+            cp "$SRC_DIR/Image.lz4" ./bootimgs/
+            cp "$SRC_DIR/Image.lz4" ./
+          else
+            echo "::warning::没有可用的 Image.lz4，将跳过 lz4 镜像构建"
+          fi
           gzip -n -k -f -9 ./Image > ./Image.gz
 
       - name: 创建 AnyKernel3 压缩包
@@ -1793,9 +1994,13 @@ jobs:
           $AVBTOOL add_hash_footer --partition_name boot --partition_size $((64 * 1024 * 1024)) --image boot-gz.img --algorithm SHA256_RSA2048 --key $BOOT_SIGN_KEY_PATH
           cp ./boot-gz.img ../${{ inputs.android_version }}-${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.os_patch_level }}-boot-gz.img
 
-          $MKBOOTIMG --header_version 4 --kernel Image.lz4 --output boot-lz4.img --ramdisk out/ramdisk --os_version 12.0.0 --os_patch_level "${{ inputs.os_patch_level }}"
-          $AVBTOOL add_hash_footer --partition_name boot --partition_size $((64 * 1024 * 1024)) --image boot-lz4.img --algorithm SHA256_RSA2048 --key $BOOT_SIGN_KEY_PATH
-          cp ./boot-lz4.img ../${{ inputs.android_version }}-${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.os_patch_level }}-boot-lz4.img
+          if [ -f Image.lz4 ]; then
+            $MKBOOTIMG --header_version 4 --kernel Image.lz4 --output boot-lz4.img --ramdisk out/ramdisk --os_version 12.0.0 --os_patch_level "${{ inputs.os_patch_level }}"
+            $AVBTOOL add_hash_footer --partition_name boot --partition_size $((64 * 1024 * 1024)) --image boot-lz4.img --algorithm SHA256_RSA2048 --key $BOOT_SIGN_KEY_PATH
+            cp ./boot-lz4.img ../${{ inputs.android_version }}-${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.os_patch_level }}-boot-lz4.img
+          else
+            echo "::warning::缺少 Image.lz4，跳过 boot-lz4.img"
+          fi
 
       - name: 构建 Boot 镜像 (Android 13+)
         if: inputs.android_version == 'android13' || inputs.android_version == 'android14' || inputs.android_version == 'android15' || inputs.android_version == 'android16'
@@ -1811,9 +2016,13 @@ jobs:
           $AVBTOOL add_hash_footer --partition_name boot --partition_size $((64 * 1024 * 1024)) --image boot-gz.img --algorithm SHA256_RSA2048 --key $BOOT_SIGN_KEY_PATH
           cp ./boot-gz.img ../${{ inputs.android_version }}-${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.os_patch_level }}-boot-gz.img
 
-          $MKBOOTIMG --header_version 4 --kernel Image.lz4 --output boot-lz4.img
-          $AVBTOOL add_hash_footer --partition_name boot --partition_size $((64 * 1024 * 1024)) --image boot-lz4.img --algorithm SHA256_RSA2048 --key $BOOT_SIGN_KEY_PATH
-          cp ./boot-lz4.img ../${{ inputs.android_version }}-${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.os_patch_level }}-boot-lz4.img
+          if [ -f Image.lz4 ]; then
+            $MKBOOTIMG --header_version 4 --kernel Image.lz4 --output boot-lz4.img
+            $AVBTOOL add_hash_footer --partition_name boot --partition_size $((64 * 1024 * 1024)) --image boot-lz4.img --algorithm SHA256_RSA2048 --key $BOOT_SIGN_KEY_PATH
+            cp ./boot-lz4.img ../${{ inputs.android_version }}-${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.os_patch_level }}-boot-lz4.img
+          else
+            echo "::warning::缺少 Image.lz4，跳过 boot-lz4.img"
+          fi
 
       - name: 收集补丁冲突文件
         if: always()
