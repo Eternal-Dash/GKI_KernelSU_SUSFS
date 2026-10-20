@@ -17,10 +17,27 @@ custom=true
 
 # ==================== SUSFS 各分支的 commit hash ====================
 # 仅当 custom=true 时生效；留空 = 用最新
-gki-android12-5.10=
-gki-android13-5.15=
-gki-android14-6.1=
-gki-android15-6.6=
+#
+# 为什么要把 SUSFS 也钉住（2026-10-20）：
+#   SUSFS 上游在 2026-10-19 的 "kernel & KernelSU: Sync with the official KernelSU main repo"
+#   中，把 50_add_susfs 补丁改成依赖新版 KernelSU 的内核侧 API：
+#       ksu_setup_preinit_file / ksu_preinit_handle_post_execveat
+#       my_setprocattr / my_write_context / my_write_access
+#   而本仓库钉住的 SukiSU v4.2.1（builtin）里没有这些符号，于是链接期报
+#   "undefined symbol"，构建失败（log: fs/exec.c、security/selinux/hooks.c、selinuxfs.c）。
+#   因此这里钉到该同步提交的**父提交**：保留 "More fixes for selinux_hide" 的修复，
+#   但不引入需要新版 KSU 的 5 个符号（已逐个符号交叉验证）。
+#
+# 什么时候可以放开：
+#   · SukiSU 升级到包含 preinit / my_* API 的版本后，把下面清空即可跟随最新；
+#   · 或不升级 SukiSU，只把 SUSFS 更新到分界点之前。
+#
+# 注意：ShirkNeko/susfs4ksu 没有 gki-android16-6.12 分支（12/13/14/15 才有），
+#       6.12 会回退到 simonpunk/susfs4ksu，故这一项留空、不钉。
+gki-android12-5.10=31eb14add587b0a089dfe1819f92cc94920e141e
+gki-android13-5.15=a2dff232d075e033d43999a71deddaaa261aaf2e
+gki-android14-6.1=2385dab487c3abb8c4a2990ea5c852f55fb47dc8
+gki-android15-6.6=ebf876ee4ec4761989b30bc9d545d8e2b85c2270
 gki-android16-6.12=
 
 # ==================== SukiSU 的 commit hash ====================
