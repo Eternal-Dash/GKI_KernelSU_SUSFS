@@ -43,7 +43,7 @@ on:
           #- Next
         default: BakaSU
       ksu_mode:
-        description: "KernelSU / SUSFS 模式"
+        description: "KernelSU / SUSFS 模式（关闭=完整；禁用SUSFS 走 main 且不套用 config 固定提交；禁用KSU=纯净）"
         type: choice
         options:
           - 关闭
@@ -51,13 +51,13 @@ on:
           - 禁用KSU
         default: 关闭
       use_kpm:
-        description: "KPM 功能（patched 尚不支持）"
+        description: "KPM 功能（enabled 与 patched 等效，均注入 KernelPatch 宿主；仅 SukiSU / BakaSU / Next 生效，未实测）"
         type: choice
         default: "disabled (关闭)"
         options:
           - "disabled (关闭)"
-          - "enabled (开启)"
-          - "patched (开启并修补，尚不支持)"
+          - "enabled (开启，注入 KernelPatch 宿主)"
+          - "patched (与 enabled 等效，同样注入宿主)"
       droidspaces:
         description: "Droidspaces 容器支持 (5.10~6.6: 槽位补丁, 6.12: 开/关)"
         type: choice
@@ -86,7 +86,7 @@ on:
         type: boolean
         default: true
       export_susfs_patches:
-        description: "收集 SUSFS 集成补丁（仅 SukiSU / BakaSU）"
+        description: "收集 SUSFS 集成补丁（仅 SukiSU / BakaSU；老版本 SukiSU 不导出）"
         type: boolean
         default: true
 
@@ -568,6 +568,7 @@ jobs:
             "Official")  KSU_NAME="KernelSU" ;;
             "SukiSU")    KSU_NAME="SukiSU" ;;
             "BakaSU")  KSU_NAME="BakaSU" ;;
+            *)           KSU_NAME="${{ inputs.kernelsu_variant }}" ;;
           esac
           echo "KSU_NAME=$KSU_NAME" >> $GITHUB_ENV
 
@@ -601,7 +602,7 @@ jobs:
           echo "KPM_STATUS=$KPM_STATUS" >> $GITHUB_ENV
 
           # Hook 类型
-          if [ "${{ inputs.kernelsu_variant }}" = "SukiSU" ] || [ "${{ inputs.kernelsu_variant }}" = "BakaSU" ]; then
+          if [[ "${{ inputs.kernelsu_variant }}" == SukiSU* ]] || [ "${{ inputs.kernelsu_variant }}" = "BakaSU" ]; then
             echo "HOOK_TYPE=SUSFS Inline Hooks" >> $GITHUB_ENV
           else
             echo "HOOK_TYPE=KPROBE Hooks" >> $GITHUB_ENV
@@ -674,7 +675,23 @@ jobs:
               ;;
             "BakaSU") BRANCH="main" ;;
             "Next") BRANCH="dev" ;;
-            *) echo "错误: 未知变体" >&2; exit 1 ;;
+            "SukiSU"*)
+              # 老版本 SukiSU（SukiSU(40726) / SukiSU(40548)）：不跟随上游分支，
+              # 使用 config/<变体>.config 中固定的提交（与 build.yml 的 LEGACY_SUKISU_CONFIG 对应）
+              LEGACY_CFG="config/${{ inputs.kernelsu_variant }}.config"
+              if [ ! -f "$LEGACY_CFG" ]; then
+                echo "::error::未找到老版本配置文件 $LEGACY_CFG" >&2
+                exit 1
+              fi
+              LEGACY_COMMIT=$(grep "^sukisu=" "$LEGACY_CFG" | cut -d'=' -f2- | tr -d ' \r\t')
+              if [ -z "$LEGACY_COMMIT" ]; then
+                echo "::error::$LEGACY_CFG 未配置 sukisu 固定提交" >&2
+                exit 1
+              fi
+              BRANCH="legacy"
+              echo "LEGACY_KSU_COMMIT=$LEGACY_COMMIT" >> $GITHUB_ENV
+              ;;
+            *) echo "::error::未知变体 ${{ inputs.kernelsu_variant }}" >&2; exit 1 ;;
           esac
           echo "KSU_BRANCH=$BRANCH" >> $GITHUB_ENV
           echo "BRANCH_INFO=$BRANCH" >> $GITHUB_ENV
@@ -687,9 +704,17 @@ jobs:
             "Next") REPO_URL="https://github.com/KernelSU-Next/KernelSU-Next.git"; REPO_URL2="KernelSU-Next/KernelSU-Next" ;;
             "SukiSU") REPO_URL="https://github.com/SukiSU-Ultra/SukiSU-Ultra.git"; REPO_URL2="SukiSU-Ultra/SukiSU-Ultra" ;;
             "BakaSU") REPO_URL="https://github.com/Baka-SU/BakaSU.git"; REPO_URL2="Baka-SU/BakaSU" ;;
+            "SukiSU"*) REPO_URL="https://github.com/SukiSU-Ultra/SukiSU-Ultra.git"; REPO_URL2="SukiSU-Ultra/SukiSU-Ultra" ;;
           esac
 
-          if [ "${{ inputs.kernelsu_variant }}" = "SukiSU" ] && [ -f "config/config" ]; then
+          # 老版本变体：直接取配置文件里固定的提交，不去 ls-remote 上游分支
+          if [ -n "${LEGACY_KSU_COMMIT:-}" ]; then
+            KSU_REF="$LEGACY_KSU_COMMIT"
+            KSU_URL="https://github.com/$REPO_URL2/commit/$KSU_REF"
+          fi
+
+          # 与 build.yml 保持一致：仅「关闭」模式（启用 SUSFS）才会套用 config 固定提交
+          if [ "${{ inputs.kernelsu_variant }}" = "SukiSU" ] && [ "${{ inputs.ksu_mode }}" = "关闭" ] && [ -f "config/config" ]; then
             CUSTOM_ENABLED=$(grep "^custom=" config/config | cut -d'=' -f2)
             CUSTOM_COMMIT=$(grep "^sukisu=" config/config | cut -d'=' -f2)
             if [ "$CUSTOM_ENABLED" = "true" ] && [ -n "$CUSTOM_COMMIT" ]; then

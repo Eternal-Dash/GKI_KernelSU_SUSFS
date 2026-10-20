@@ -1872,8 +1872,10 @@ jobs:
       #   2. 产物目录不再按 android/kernel 组合猜（原逻辑在 android12/13 + 6.6 时
       #      TARGET_PATH 为空，cp 会落到根目录），改为按「目录下是否存在 Image」探测。
       #   3. 支持集合与 CONFIG_KPM 注入保持一致：SukiSU / BakaSU / Next。
+      # 只有在「KSU 本体存在」且「会写入 CONFIG_KPM」时才注入宿主，
+      # 否则会产出「有宿主、无 CONFIG_KPM」或反之的半成品内核。
       - name: 应用 KPM 补丁 (SukiSU/BakaSU/Next)
-        if: ${{ (startsWith(inputs.use_kpm, 'enabled') || startsWith(inputs.use_kpm, 'patched')) && (inputs.ksu_variant == 'SukiSU' || inputs.ksu_variant == 'BakaSU' || inputs.ksu_variant == 'Next') }}
+        if: ${{ inputs.ksu_mode != '禁用KSU' && (startsWith(inputs.use_kpm, 'enabled') || startsWith(inputs.use_kpm, 'patched')) && (inputs.ksu_variant == 'SukiSU' || inputs.ksu_variant == 'BakaSU' || inputs.ksu_variant == 'Next') }}
         run: |
           set -euo pipefail
 
