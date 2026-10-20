@@ -1,3 +1,6 @@
+# 修改者：Eternal-Dash <https://github.com/Eternal-Dash>（2026-10）
+# 说明：本文件相对上游 zzh20188/GKI_KernelSU_SUSFS 的改动为 KPM 状态文案与支持集合判定，
+#       使其与 build.yml 中实际执行的步骤保持一致。上游版权归原作者所有，详见 CREDITS.md。
 # GKI 内核构建主入口
 # 此工作流是项目的统一入口点，用于：
 # 1. 构建所有版本的 GKI 内核
@@ -578,13 +581,24 @@ jobs:
           echo "LZ4_STATUS=${{ inputs.use_zram && '开启' || '未开启' }}" >> $GITHUB_ENV
           echo "BBG_STATUS=${{ inputs.use_bbg && '支持' || '不支持' }}" >> $GITHUB_ENV
           echo "NET_STATUS=${{ inputs.use_networking && '开启' || '未开启' }}" >> $GITHUB_ENV
-          if [[ "${{ inputs.use_kpm }}" == enabled* ]]; then
-            echo "KPM_STATUS=支持" >> $GITHUB_ENV
+          # KPM 状态：与 build.yml 实际执行的步骤保持一致
+          #   · 支持集合：SukiSU / BakaSU / Next（这三者才会注入 KernelPatch 宿主）
+          #   · 其余变体在构建时会被忽略并输出 warning，这里如实标注
+          #   · enabled 与 patched 现在等效：都会开 CONFIG_KPM 并注入宿主
+          KPM_SUPPORTED=false
+          case "${{ inputs.kernelsu_variant }}" in
+            "SukiSU"|"BakaSU"|"Next") KPM_SUPPORTED=true ;;
+          esac
+          if [[ "${{ inputs.use_kpm }}" == disabled* ]]; then
+            KPM_STATUS="未开启"
+          elif [ "$KPM_SUPPORTED" != "true" ]; then
+            KPM_STATUS="当前变体不支持（已忽略）"
           elif [[ "${{ inputs.use_kpm }}" == patched* ]]; then
-            echo "KPM_STATUS=支持（补丁尚不支持）" >> $GITHUB_ENV
+            KPM_STATUS="支持（与 enabled 等效，宿主已注入）"
           else
-            echo "KPM_STATUS=未开启" >> $GITHUB_ENV
+            KPM_STATUS="支持（宿主已注入，未实测）"
           fi
+          echo "KPM_STATUS=$KPM_STATUS" >> $GITHUB_ENV
 
           # Hook 类型
           if [ "${{ inputs.kernelsu_variant }}" = "SukiSU" ] || [ "${{ inputs.kernelsu_variant }}" = "BakaSU" ]; then
