@@ -971,12 +971,16 @@ jobs:
           if [ -z "$LEGACY_SUKISU_CONFIG" ] && [ -f "$CONFIG_FILE" ]; then
             CUSTOM_ENABLED=$(grep "^custom=" "$CONFIG_FILE" | cut -d'=' -f2 || true)
             if [ "$CUSTOM_ENABLED" == "true" ]; then
-              CUSTOM_COMMIT=$(grep "^${SUSFS_BRANCH}=" "$CONFIG_FILE" | cut -d'=' -f2 || true)
+              CUSTOM_COMMIT=$(grep "^${SUSFS_BRANCH}=" "$CONFIG_FILE" | cut -d'=' -f2- | tr -d ' \r\t' || true)
               if [ -n "$CUSTOM_COMMIT" ]; then
-                echo "切换 SUSFS 到自定义提交: $CUSTOM_COMMIT"
-                cd susfs4ksu
-                retry git checkout "$CUSTOM_COMMIT"
-                cd ..
+                # 固定提交必须存在于当前克隆的仓库里：SukiSU 走 ShirkNeko/susfs4ksu，
+                # 克隆失败时会回退到 simonpunk/susfs4ksu，两边的提交哈希并不通用。
+                if git -C susfs4ksu cat-file -e "${CUSTOM_COMMIT}^{commit}" 2>/dev/null; then
+                  echo "切换 SUSFS 到自定义提交: $CUSTOM_COMMIT"
+                  retry git -C susfs4ksu checkout "$CUSTOM_COMMIT"
+                else
+                  echo "::warning::当前 SUSFS 仓库不含提交 $CUSTOM_COMMIT（可能回退到了其他仓库），保持分支最新提交"
+                fi
               fi
             fi
           fi
