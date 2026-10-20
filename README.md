@@ -132,7 +132,7 @@ KPM 的完整链路是：`CONFIG_KPM=y` → `patch_linux` 对 `Image` 注入 Ker
 
 ---
 
-## 7. 不用动
+## 7. 许可、致谢与二次 Fork
 
 - **许可证**：GPL-2.0（见 [LICENSE](LICENSE)）。本仓库是衍生作品，**必须继续以 GPL-2.0 分发**。
 - **版权归属**：内核、SUSFS（simonpunk/susfs4ksu）、KernelSU / SukiSU / KernelSU-Next、以及构建脚本的上游部分，版权归各自作者。本 fork **只对「构建流程适配」这一小部分主张自己的改动**，不主张上游任何代码的著作权。

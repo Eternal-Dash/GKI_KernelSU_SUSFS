@@ -11,7 +11,7 @@ Only the build pipeline is adapted; kernel / SUSFS / KernelSU sources are used a
 
 ---
 
-## 0. What this is (and is not)
+## 0. Wait, what even is this?
 
 | | |
 |:---|:---|
@@ -28,7 +28,7 @@ WildKernels/GKI_KernelSU_SUSFS  (main)      ← original upstream
 
 ---
 
-## 1. What we changed
+## 1. What did we do?
 
 1. **Three build-time patches for SukiSU's `builtin` branch** (the one with SUSFS baked in)
    - UAPI version alignment (`2` → `5`)
@@ -40,7 +40,7 @@ WildKernels/GKI_KernelSU_SUSFS  (main)      ← original upstream
    - the pinned `sukisu` commit in `config/config` no longer applies when SUSFS is disabled
    - the `CONFIG_KPM` injection set now matches the set that actually injects the KernelPatch host (`SukiSU / BakaSU / Next`)
 
-## 2. How we did it
+## 2. How the heck did we pull that off?
 
 No kernel source is modified. Everything happens at build time, located by **actual source features**, and is **idempotent**:
 
@@ -52,7 +52,7 @@ No kernel source is modified. Everything happens at build time, located by **act
 | `Image.lz4` | `command -v lz4` | always recompressed from the patched `Image` | decompress + `cmp` against `Image` |
 | KPM output dir | probing which directory actually contains `Image` | no longer guesses by android/kernel combo | explicit error instead of silent continue |
 
-## 3. What we gained
+## 3. So what does it actually get you?
 
 - The `builtin` branch compiles without hand-editing sources.
 - KPM has a real chance of working: `CONFIG_KPM` **and** the KernelPatch host are both present.
@@ -60,7 +60,7 @@ No kernel source is modified. Everything happens at build time, located by **act
 - Other variants (Official / Next / BakaSU / legacy SukiSU) are untouched; unsupported KPM requests produce a clear warning.
 - Upstream movement does not break the pipeline: patches self-disable, and every change is logged before/after.
 
-## 4. Drawbacks
+## 4. So what's the catch?
 
 1. **Symptom-level fix, not a real upstream fix.** If upstream changes file layout or symbol style, the patches silently disappear (by design) — check the build log.
 2. **UAPI is a declared alignment.** UAPI 3 and 5 features exist in that commit, but **4 (`KSU_GET_INFO_FLAG_BUNDLED`) is not implemented**. A manager reading that flag per UAPI ≥ 4 gets 0; behaviour impact is untested.
@@ -69,7 +69,7 @@ No kernel source is modified. Everything happens at build time, located by **act
 5. **Environment dependency** — `Image.lz4` is compressed in CI (`lz4 -l -12 --favor-decSpeed`, legacy frame) and verified by decompressing.
 6. **Maintenance burden** — once upstream merges equivalent fixes, these patches should be deleted rather than kept.
 
-## 5. Think carefully about
+## 5. Stuff you should [think hard] about
 
 - Whether you actually need KPM — it is the biggest behavioural difference and the biggest risk.
 - Keeping kernel / manager / SUSFS module versions matched.
@@ -77,7 +77,7 @@ No kernel source is modified. Everything happens at build time, located by **act
 - `clean_build=true` skips all three patches — for A/B comparison only.
 - This is **not** an official SukiSU / SUSFS / KernelSU build.
 
-## 6. If you build it yourself
+## 6. How do I build this thing?
 
 1. Variant must be `SukiSU` **and** SUSFS must stay enabled, otherwise the three patches do not run (the log says why).
 2. KPM only works on `SukiSU / BakaSU / Next`; elsewhere `CONFIG_KPM` is not written and a warning is emitted.
