@@ -403,8 +403,9 @@ jobs:
           echo "使用当前仓库补丁目录: $ZZH_PATCHES"
           clone_with_retry https://github.com/Numbersf/Action-Build.git Action-Build --depth=1
 
-      - name: 初始化并同步内核源码
-        working-directory: ${{ env.KERNEL_ROOT }}
+      - name: 初始化并同步内核源码 (AOSP)
+        if: env.SOURCE_TYPE != 'oplus'
+        working-directory: ${{ env.KERNEL_SYNC_ROOT }}
         run: |
           FORMATTED_BRANCH="${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.os_patch_level }}"
           MAX_ATTEMPTS=3
