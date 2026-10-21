@@ -271,14 +271,15 @@ jobs:
           # ---------- 设备谱系加载 ----------
           # 为空时完全走 AOSP 逻辑，行为与改造前一致。
           if [ -n "${{ inputs.device_profile }}" ]; then
-            PROFILE_ENV_FILE="$(mktemp)"
-            python3 "$GITHUB_WORKSPACE/scripts/oneplus/load_profile.py" "${{ inputs.device_profile }}" > "$PROFILE_ENV_FILE"
-            cat "$PROFILE_ENV_FILE" >> "$GITHUB_ENV"
-            # $GITHUB_ENV 只对后续步骤生效，本步骤内用 set -a 回读（值里可能有空格）
+            # 写 $GITHUB_ENV 必须用裸值；source 必须用 shlex 转义版本，
+            # 否则 "一加 Ace 6 (PLQ110 / ktm)" 这类值会被 shell 当成命令执行
+            SHELL_ENV_FILE="$(mktemp)"
+            python3 "$GITHUB_WORKSPACE/scripts/oneplus/load_profile.py" "${{ inputs.device_profile }}" --format=github >> "$GITHUB_ENV"
+            python3 "$GITHUB_WORKSPACE/scripts/oneplus/load_profile.py" "${{ inputs.device_profile }}" --format=shell > "$SHELL_ENV_FILE"
             set -a
-            . "$PROFILE_ENV_FILE"
+            . "$SHELL_ENV_FILE"
             set +a
-            rm -f "$PROFILE_ENV_FILE"
+            rm -f "$SHELL_ENV_FILE"
             mkdir -p "$KERNEL_SYNC_ROOT" "$KERNEL_ROOT"
             echo "设备配置: $DEVICE_NAME ($DEVICE_PROFILE)"
             echo "源码根目录: $KERNEL_SYNC_ROOT"
