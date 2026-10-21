@@ -135,7 +135,7 @@ jobs:
   build-kernel:
     name: "${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.android_version }}-${{ inputs.os_patch_level }}-${{ inputs.ksu_variant }}"
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 200
 
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
@@ -1895,8 +1895,8 @@ jobs:
         uses: nick-fields/retry@v4
         with:
           shell: bash
-          timeout_minutes: 30
-          max_attempts: 3
+          timeout_minutes: 90
+          max_attempts: 2
           retry_on: timeout
           command: |
             LOG_DIR="$GITHUB_WORKSPACE/build-logs"
@@ -1925,15 +1925,23 @@ jobs:
 
               # ---- 设备谱系分流：一加 OKI 用官方脚本，AOSP 用下方 bazel/build.sh ----
               if [ "$SOURCE_TYPE" = "oplus" ]; then
-                if [ -z "$BUILD_CMD" ]; then
-                  echo "::error::设备配置缺少 build_cmd" >&2
+                # 官方 manifest 把 modules_and_devicetree 仓库铺在同步根目录（path="./"），
+                # oplus/ 不一定在 kernel_platform 下，这里自动定位，避免硬编码路径失配。
+                BUILD_SCRIPT=$(find "$KERNEL_SYNC_ROOT" -maxdepth 4 -type f -name oplus_build_kernel.sh 2>/dev/null | head -n 1)
+                if [ -z "$BUILD_SCRIPT" ]; then
+                  echo "::error::找不到 oplus_build_kernel.sh，源码布局与预期不符" >&2
+                  echo "同步根目录内容:" >&2
+                  ls -la "$KERNEL_SYNC_ROOT" >&2 || true
                   exit 1
                 fi
-                echo "一加构建命令: $BUILD_CMD"
+                BUILD_DIR=$(cd "$(dirname "$BUILD_SCRIPT")/../.." && pwd)
+                echo "构建脚本: $BUILD_SCRIPT"
+                echo "构建目录: $BUILD_DIR"
                 echo "平台: ${PLATFORM:-未知} / 变体: ${BUILD_METHOD:-未知}"
-                $BUILD_CMD
+                cd "$BUILD_DIR"
+                ./oplus/build/oplus_build_kernel.sh "${PLATFORM}" "${BUILD_METHOD}"
                 echo "=== 编译产物 ==="
-                find "$KERNEL_ROOT/out" -maxdepth 5 -name Image -type f 2>/dev/null | head -20 || true
+                find "$KERNEL_SYNC_ROOT" -maxdepth 6 -name Image -type f 2>/dev/null | head -20 || true
                 exit 0
               fi
 
@@ -2047,7 +2055,7 @@ jobs:
           done
           # 一加 OKI 的产物落在 kernel_platform/out 深层目录，用 find 兜底定位
           if [ -z "$TARGET_PATH" ] && [ -d "$KERNEL_ROOT/out" ]; then
-            FOUND_IMG=$(find "$KERNEL_ROOT/out" -name Image -type f 2>/dev/null | head -n 1)
+            FOUND_IMG=$(find "$KERNEL_SYNC_ROOT" -name Image -type f 2>/dev/null | head -n 1)
             [ -n "$FOUND_IMG" ] && TARGET_PATH=$(dirname "$FOUND_IMG")
           fi
 
@@ -2097,7 +2105,8 @@ jobs:
           set -uo pipefail
           command -v strings >/dev/null 2>&1 || sudo apt-get install -y -qq binutils >/dev/null 2>&1 || true
 
-          IMG=$(find "$KERNEL_ROOT/out" -maxdepth 6 -name Image -type f 2>/dev/null | head -n 1)
+          # 一加的 out/ 可能在同步根目录下（不在 kernel_platform 里），两处都找
+          IMG=$(find "$KERNEL_SYNC_ROOT" -maxdepth 7 -name Image -type f 2>/dev/null | head -n 1)
           if [ -z "$IMG" ]; then
             echo "::error::未找到 Image 产物，构建未真正完成"
             exit 1
