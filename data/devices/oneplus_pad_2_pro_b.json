@@ -1,7 +1,7 @@
 {
   "_comment": "由官方 manifest 自动生成：一台设备一条内核分支。kernel_variants 可继续补充该分支的固件打点。",
   "id": "oneplus_pad_2_pro_b",
-  "display_name": "一加平板 2 Pro (ColorOS16)",
+  "display_name": "一加平板 2 Pro (ColorOS16) · 内核 6.6.118",
   "source_type": "oplus",
   "android_version": "android16",
   "kernel_version": "6.6",
@@ -49,5 +49,6 @@
     "内核源码分支: oneplus/sm8750_b_16.0.0_pad_2_pro",
     "platform=sun（SM8750）",
     "localversion 必须 keep"
-  ]
+  ],
+  "build_engine": "make"
 }

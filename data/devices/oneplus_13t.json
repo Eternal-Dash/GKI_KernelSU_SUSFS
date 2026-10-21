@@ -1,7 +1,7 @@
 {
   "_comment": "由官方 manifest 自动生成：一台设备一条内核分支。kernel_variants 可继续补充该分支的固件打点。",
   "id": "oneplus_13t",
-  "display_name": "一加 13T (ColorOS15)",
+  "display_name": "一加 13T (ColorOS15) · 内核 6.6.66",
   "source_type": "oplus",
   "android_version": "android15",
   "kernel_version": "6.6",
@@ -49,5 +49,6 @@
     "内核源码分支: oneplus/sm8750_v_15.0.2_oneplus_13t",
     "platform=sun（SM8750）",
     "localversion 必须 keep"
-  ]
+  ],
+  "build_engine": "make"
 }

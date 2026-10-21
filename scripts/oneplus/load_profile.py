@@ -156,6 +156,7 @@ def main():
         "PLATFORM": p.get("platform") or "",
         "SUSFS_KMI": p.get("susfs_kmi") or android,
         "BUILD_METHOD": p.get("build_method") or "perf",
+        "BUILD_ENGINE": p.get("build_engine") or "oplus",
         "BUILD_CMD": p.get("build_cmd") or "",
         "MANIFEST_REPOS": " ".join(repos),
         "MANIFEST_BRANCH": manifest.get("branch") or "",

@@ -54,6 +54,13 @@ on:
         type: string
         default: ""
 
+      build_engine:
+        # make = 直接 make gki_defconfig + Image（快，只出内核，AK3 够用）
+        # oplus = 官方脚本全量构建（含厂商模块与镜像打包，慢 3-5 倍）
+        required: false
+        type: string
+        default: ""
+
       fast_image:
         # 只产 Image 就收工：编出 Image 后终止后续模块打包，AK3 只需要 Image
         required: false
@@ -2008,6 +2015,40 @@ jobs:
                 fi
 
                 cd "$BUILD_DIR"
+
+                # 引擎切换：优先用输入，其次用设备配置里的 build_engine
+                ENGINE="${BUILD_ENGINE:-oplus}"
+                if [ -n "${{ inputs.build_engine }}" ]; then ENGINE="${{ inputs.build_engine }}"; fi
+                echo "构建引擎: $ENGINE"
+
+                if [ "$ENGINE" = "make" ]; then
+                  # 等价于 Action-Build 的 Build Kernel FAST：
+                  # 直接编译 GKI 内核镜像，不编厂商模块、不打包镜像。
+                  cd "$KERNEL_ROOT/common"
+                  CLANG_DIR=$(ls -d "$KERNEL_ROOT"/prebuilts/clang/host/linux-x86/clang-* 2>/dev/null | sort -V | tail -n 1)
+                  if [ -n "$CLANG_DIR" ]; then
+                    export PATH="$CLANG_DIR/bin:$KERNEL_ROOT/prebuilts/build-tools/path/linux-x86:$PATH"
+                    echo "clang: $CLANG_DIR"
+                  fi
+                  CC_WRAPPER="$BUILD_DIR/cc-wrapper"
+                  printf '#!/bin/bash\nexec ccache clang "$@"\n' > "$CC_WRAPPER"
+                  chmod +x "$CC_WRAPPER"
+                  MAP="-fdebug-prefix-map=$BUILD_DIR=."
+                  KCFLAGS="$MAP -no-canonical-prefixes -O2 -pipe -Wno-error -D__ANDROID_COMMON_KERNEL__"
+
+                  make O=out LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+                       CC="$CC_WRAPPER" HOSTCC="$CC_WRAPPER" HOSTLD=ld.lld \
+                       KCFLAGS="$KCFLAGS" gki_defconfig --no-print-directory
+                  make O=out LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+                       CC="$CC_WRAPPER" HOSTCC="$CC_WRAPPER" HOSTLD=ld.lld \
+                       KCFLAGS="$KCFLAGS" olddefconfig --no-print-directory
+                  make -j"$(nproc --all)" O=out LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+                       CC="$CC_WRAPPER" HOSTCC="$CC_WRAPPER" HOSTLD=ld.lld \
+                       KCFLAGS="$KCFLAGS" Image
+                  ccache -s || true
+                  ls -la out/arch/arm64/boot/Image
+                  exit 0
+                fi
 
                 if [ "${{ inputs.fast_image }}" = "true" ]; then
                   # 只产 Image 模式：AK3 只需要 Image，厂商模块用原厂 vendor_dlkm 的，

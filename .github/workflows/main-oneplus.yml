@@ -69,6 +69,15 @@ on:
           - consolidate
         default: perf
 
+      build_engine:
+        description: "构建引擎（make=快速只出 Image；oplus=官方全量含厂商模块）"
+        required: true
+        type: choice
+        options:
+          - make
+          - oplus
+        default: make
+
       fast_image:
         description: "快速模式：只编到 Image 就收工（AK3 只需要 Image，可显著缩短时间）"
         required: true
@@ -234,6 +243,7 @@ jobs:
     with:
       device_profile: ${{ inputs.device_profile }}
       build_method: ${{ inputs.build_method }}
+      build_engine: ${{ inputs.build_engine }}
       fast_image: ${{ inputs.fast_image }}
       kernel_version_target: ${{ inputs.kernel_version_target }}
       firmware: ${{ inputs.firmware }}
