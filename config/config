@@ -34,9 +34,18 @@ custom=true
 #
 # 注意：ShirkNeko/susfs4ksu 没有 gki-android16-6.12 分支（12/13/14/15 才有），
 #       6.12 会回退到 simonpunk/susfs4ksu，故这一项留空、不钉。
+#
+# 2026-10-21 调整（gki-android14-6.1）：
+#   原钉 2385dab4 属于 2026 年的提交，其 50_add_susfs 补丁的 fs/namespace.c hunk 上下文
+#   需要 '#include <trace/hooks/blk.h>'，而 6.1.138（2025-06）的内核没有这一行，
+#   导致 hunk 被拒 → susfs_def.h / extern 声明缺失 → 编译期一堆 undeclared identifier。
+#   改钉 0f9e8265（2025-07-11，与 6.1.138 同期）：
+#     · 该版本补丁不含 trace/hooks/blk.h 上下文，可正常套用
+#     · 不含 ksu_setup_preinit_file 等新版 KSU API，不破坏钉住的 SukiSU v4.2.1
+#   其它分支（5.10/5.15/6.6/6.12）未改动。
 gki-android12-5.10=31eb14add587b0a089dfe1819f92cc94920e141e
 gki-android13-5.15=a2dff232d075e033d43999a71deddaaa261aaf2e
-gki-android14-6.1=2385dab487c3abb8c4a2990ea5c852f55fb47dc8
+gki-android14-6.1=0f9e826516b96426155c04ad006bd4cc2ed68837
 gki-android15-6.6=ebf876ee4ec4761989b30bc9d545d8e2b85c2270
 gki-android16-6.12=
 
