@@ -1128,7 +1128,9 @@ jobs:
         if: inputs.enable_susfs
         working-directory: ${{ env.KERNEL_ROOT }}
         env:
-          ANDROID_VERSION: ${{ inputs.android_version }}
+          # 一加设备的系统是 android16、内核走 android15 KMI 谱系，
+          # SUSFS 的补丁文件名（50_add_susfs_in_gki-<android>-<kernel>.patch）必须跟内核走
+          ANDROID_VERSION: ${{ env.SUSFS_KMI || inputs.android_version }}
           KERNEL_VERSION: ${{ inputs.kernel_version }}
           KSU_VARIANT: ${{ inputs.ksu_variant }}
           OS_PATCH_LEVEL: ${{ inputs.os_patch_level }}

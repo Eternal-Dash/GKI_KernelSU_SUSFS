@@ -20,7 +20,7 @@
     "file": "oneplus_ace_6.xml"
   },
   "localversion_mode": "keep",
-  "expect_vermagic": "6.6.118-android15-8-o-4k",
+  "expect_vermagic": "",
   "vermagic_strict": false,
   "pack": {
     "mode": "anykernel",
@@ -39,7 +39,22 @@
     "localversion 必须为 keep：官方 vermagic 带 -o-4k，改了就加载不了厂商模块。",
     "build_method=perf 与官方 README 一致（oplus_build_kernel.sh sun perf）。",
     "刷机方式：AnyKernel3 只替换 boot 里的 Image，不动 init_boot / vendor_boot。",
-    "expect_vermagic 用于构建后自检，与 stock 模块 vermagic 不一致时不建议刷入。"
+    "expect_vermagic 用于构建后自检，与 stock 模块 vermagic 不一致时不建议刷入。",
+    "kernel_variants 决定产物命名与 vermagic 校验基准；源码分支目前官方只有一条，无法真正切换内核小版本。"
   ],
-  "susfs_kmi": "android15"
+  "susfs_kmi": "android15",
+  "kernel_variants": {
+    "default": {
+      "label": "官方清单当前分支（推荐先试）",
+      "sub_level": "118",
+      "os_patch_level": "2026-01",
+      "expect_vermagic": ""
+    },
+    "stock_6.6.66": {
+      "label": "出厂/存量系统（原厂 boot.img 实测 6.6.66）",
+      "sub_level": "66",
+      "os_patch_level": "2025-02",
+      "expect_vermagic": "6.6.66-android15-8-g29d86c5fc9dd-abogki428889875-4k"
+    }
+  }
 }

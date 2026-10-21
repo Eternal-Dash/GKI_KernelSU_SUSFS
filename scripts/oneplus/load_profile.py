@@ -31,9 +31,12 @@ def die(msg):
 def main():
     args = []
     fmt = "github"
+    variant = ""
     for a in sys.argv[1:]:
         if a.startswith("--format="):
             fmt = a.split("=", 1)[1].strip()
+        elif a.startswith("--variant="):
+            variant = a.split("=", 1)[1].strip()
         else:
             args.append(a)
 
@@ -64,6 +67,19 @@ def main():
     kernel = p["kernel_version"]
     sub = str(p.get("sub_level") or "0")
     patch = str(p.get("os_patch_level") or "2026-01")
+    expect_v = p.get("expect_vermagic") or ""
+
+    # 内核版本选择：kernel_variants 里的一项覆盖 sub_level / os_patch_level / expect_vermagic
+    variants = p.get("kernel_variants") or {}
+    vkey = variant or "default"
+    if variants:
+        if vkey not in variants:
+            die(f"未知 kernel_variant={vkey}，可选: {', '.join(variants.keys())}")
+        v = variants[vkey] or {}
+        sub = str(v.get("sub_level", sub))
+        patch = str(v.get("os_patch_level", patch))
+        expect_v = v.get("expect_vermagic", expect_v) or expect_v
+        print(f"内核版本: {vkey} -> {kernel}.{sub} / {patch} / {expect_v or '(未指定)'}", file=sys.stderr)
 
     sync_root = os.path.join(WS, f"{p['source_type']}-{pid}")
     kernel_root = os.path.join(sync_root, "kernel_platform")
@@ -89,7 +105,7 @@ def main():
         "MANIFEST_BRANCH": manifest.get("branch") or "",
         "MANIFEST_FILE": manifest.get("file") or "",
         "LOCALVERSION_MODE": p.get("localversion_mode") or "keep",
-        "EXPECT_VERMAGIC": p.get("expect_vermagic") or "",
+        "EXPECT_VERMAGIC": expect_v,
         "VERMAGIC_STRICT": "true" if p.get("vermagic_strict") else "false",
         "PACK_MODE": pack.get("mode") or "anykernel",
         "AK3_BLOCK": pack.get("block") or "boot",
