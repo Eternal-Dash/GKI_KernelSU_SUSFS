@@ -1,0 +1,53 @@
+{
+  "_comment": "由官方 manifest 自动生成：一台设备一条内核分支。kernel_variants 可继续补充该分支的固件打点。",
+  "id": "oneplus_13t",
+  "display_name": "一加 13T (ColorOS15)",
+  "source_type": "oplus",
+  "android_version": "android15",
+  "kernel_version": "6.6",
+  "sub_level": "66",
+  "os_patch_level": "2025-02",
+  "platform": "sun",
+  "build_method": "perf",
+  "build_cmd": "./kernel_platform/oplus/build/oplus_build_kernel.sh sun perf",
+  "manifest": {
+    "repos": [
+      "OnePlusOSS/kernel_manifest",
+      "Eternal-Dash/kernel_manifest",
+      "Numbersf/kernel_manifest"
+    ],
+    "branch": "oneplus/sm8750",
+    "file": "oneplus_13t.xml"
+  },
+  "localversion_mode": "keep",
+  "susfs_kmi": "android15",
+  "expect_vermagic": "",
+  "vermagic_strict": false,
+  "pack": {
+    "mode": "anykernel",
+    "block": "boot",
+    "do_modules": "0",
+    "devicecheck": "0"
+  },
+  "ksu_variants": [
+    "SukiSU",
+    "SukiSU(40548)",
+    "SukiSU(40726)",
+    "BakaSU",
+    "Official"
+  ],
+  "kernel_variants": {
+    "default": {
+      "label": "分支最新（6.6.66）",
+      "sub_level": "66",
+      "os_patch_level": "2025-02",
+      "expect_vermagic": ""
+    }
+  },
+  "firmware_map": {},
+  "notes": [
+    "内核源码分支: oneplus/sm8750_v_15.0.2_oneplus_13t",
+    "platform=sun（SM8750）",
+    "localversion 必须 keep"
+  ]
+}
