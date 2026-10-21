@@ -1,0 +1,45 @@
+{
+  "_comment": "一加设备构建配置。source_type=oplus 时使用官方 kernel_manifest（OKI 构建），不再走 AOSP common。",
+  "id": "oneplus_ace_6",
+  "display_name": "一加 Ace 6 (PLQ110 / ktm)",
+  "source_type": "oplus",
+  "android_version": "android16",
+  "kernel_version": "6.6",
+  "sub_level": "118",
+  "os_patch_level": "2026-01",
+  "platform": "sun",
+  "build_method": "perf",
+  "build_cmd": "./oplus/build/oplus_build_kernel.sh sun perf",
+  "manifest": {
+    "repos": [
+      "OnePlusOSS/kernel_manifest",
+      "Eternal-Dash/kernel_manifest",
+      "Numbersf/kernel_manifest"
+    ],
+    "branch": "oneplus/sm8750",
+    "file": "oneplus_ace_6.xml"
+  },
+  "localversion_mode": "keep",
+  "expect_vermagic": "6.6.118-android15-8-o-4k",
+  "vermagic_strict": false,
+  "pack": {
+    "mode": "anykernel",
+    "block": "boot",
+    "do_modules": "0",
+    "devicecheck": "0"
+  },
+  "ksu_variants": [
+    "SukiSU",
+    "SukiSU(40548)",
+    "SukiSU(40726)",
+    "BakaSU",
+    "Official"
+  ],
+  "notes": [
+    "localversion 必须为 keep：官方 vermagic 带 -o-4k，改了就加载不了厂商模块。",
+    "build_method=perf 与官方 README 一致（oplus_build_kernel.sh sun perf）。",
+    "刷机方式：AnyKernel3 只替换 boot 里的 Image，不动 init_boot / vendor_boot。",
+    "expect_vermagic 用于构建后自检，与 stock 模块 vermagic 不一致时不建议刷入。"
+  ],
+  "susfs_kmi": "android15"
+}

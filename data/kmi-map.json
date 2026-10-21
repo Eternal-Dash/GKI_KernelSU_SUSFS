@@ -1,0 +1,8 @@
+{
+  "_comment": "AOSP 谱系的 KMI tag 映射（原先写死在 build.yml 的 case 里）。键为 <android_version>-<kernel_version>。",
+  "android12-5.10": "android12-5.10",
+  "android13-5.15": "android13-5.15",
+  "android14-6.1": "android14-11",
+  "android15-6.6": "android15-8",
+  "android16-6.12": "android16-5"
+}

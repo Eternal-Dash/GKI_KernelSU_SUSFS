@@ -1,0 +1,215 @@
+# =============================================================================
+# 一加内核构建入口（OKI / OnePlusOSS 清单谱系）
+#
+# 与 main.yml 的关系：
+#   main.yml        → AOSP 纯 GKI（common-androidXX-YY 分支，bazel 构建）
+#   main-oneplus.yml → 一加官方清单（OnePlusOSS/kernel_manifest + oplus_build_kernel.sh）
+#   两者调用同一个 build.yml，可选功能完全一致，差异全部来自 data/devices/*.json。
+#
+# 为什么单独开一个入口而不是改 main.yml：
+#   一加的版本号不是 AOSP 的月度矩阵，而是「机型 × 系统版本」，用设备配置描述更准确，
+#   也避免把 60 多个矩阵任务和机型配置混在一起。
+# =============================================================================
+
+name: 构建一加内核
+
+permissions:
+  contents: write
+  actions: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      # ==================== 设备 ====================
+      device_profile:
+        description: "设备配置（data/devices/<id>.json）"
+        required: true
+        type: choice
+        options:
+          - oneplus_ace_6
+        default: oneplus_ace_6
+
+      # ==================== KernelSU 配置（与 main.yml 对齐） ====================
+      kernelsu_variant:
+        description: "KernelSU 变体"
+        required: true
+        type: choice
+        options:
+          - SukiSU
+          - SukiSU(40726)
+          - SukiSU(40548)
+          - BakaSU
+          - Official
+          #- Next
+        default: SukiSU
+
+      ksu_mode:
+        description: "KernelSU / SUSFS 模式（关闭=完整；禁用SUSFS 走 main 且不套用 config 固定提交；禁用KSU=纯净）"
+        required: true
+        type: choice
+        options:
+          - 关闭
+          - 禁用SUSFS
+          - 禁用KSU
+        default: 关闭
+
+      use_kpm:
+        description: "KPM 功能（enabled 与 patched 等效，均注入 KernelPatch 宿主；仅 SukiSU / BakaSU / Next 生效，未实测）"
+        required: true
+        type: choice
+        default: "disabled (关闭)"
+        options:
+          - "disabled (关闭)"
+          - "enabled (开启，注入 KernelPatch 宿主)"
+          - "patched (与 enabled 等效，同样注入宿主)"
+
+      droidspaces:
+        description: "Droidspaces 容器支持 (5.10~6.6: 槽位补丁, 6.12: 开/关)"
+        required: false
+        type: choice
+        options:
+          - "off"
+          - "678"
+          - "123"
+          - "345"
+        default: "off"
+
+      artifact_upload_mode:
+        description: "构建产物上传模式"
+        required: true
+        type: choice
+        options:
+          - "仅上传 AnyKernel3.zip"
+          - "上传全部"
+        default: "仅上传 AnyKernel3.zip"
+
+      # ==================== 文本输入 ====================
+      version:
+        description: "自定义版本名（一加设备 localversion_mode=keep，此项会被忽略）"
+        required: false
+        type: string
+        default: ""
+      build_time:
+        description: "自定义构建时间 (可选，N或留空=当前UTC)"
+        required: false
+        type: string
+        default: "Sun Dec 01 08:10:00 UTC 2024"
+
+      # ==================== 功能开关 ====================
+      use_zram:
+        description: "启用 ZRAM 增强算法"
+        required: true
+        type: boolean
+        default: false
+      use_bbg:
+        description: "启用 BBG 防格机"
+        required: true
+        type: boolean
+        default: true
+      use_rekernel:
+        description: "启用 Re-Kernel 驱动"
+        required: false
+        type: boolean
+        default: false
+      use_nomount:
+        description: "启用 NoMount 挂载元模块"
+        required: false
+        type: boolean
+        default: false
+      use_networking:
+        description: "启用网络增强（BBRv3 / IPSet / Qdisc / CIFS）"
+        required: false
+        type: boolean
+        default: false
+      cve_2026_43499_patch:
+        description: "应用 CVE-2026-43499 rtmutex 修复链（仅 AOSP 谱系生效）"
+        required: false
+        type: boolean
+        default: false
+      supp_op:
+        description: "启用一加 8E 支持（仅 AOSP 谱系生效）"
+        required: false
+        type: boolean
+        default: false
+      droidspaces_ntsync:
+        description: "启用 Droidspaces 容器 NTSync 支持（需启用 Droidspaces）"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  # 读取设备配置，把 android/kernel/sub/os_patch 交给共用构建流程
+  resolve-device:
+    name: 读取设备配置
+    runs-on: ubuntu-24.04
+    outputs:
+      android_version: ${{ steps.profile.outputs.android_version }}
+      kernel_version: ${{ steps.profile.outputs.kernel_version }}
+      sub_level: ${{ steps.profile.outputs.sub_level }}
+      os_patch_level: ${{ steps.profile.outputs.os_patch_level }}
+      expect_vermagic: ${{ steps.profile.outputs.expect_vermagic }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 解析 data/devices
+        id: profile
+        run: |
+          set -euo pipefail
+          F="data/devices/${{ inputs.device_profile }}.json"
+          if [ ! -f "$F" ]; then
+            echo "::error::找不到设备配置 $F"
+            exit 1
+          fi
+          python3 - "$F" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          p = json.load(open(sys.argv[1], encoding="utf-8"))
+          print(f"android_version={p['android_version']}")
+          print(f"kernel_version={p['kernel_version']}")
+          print(f"sub_level={p.get('sub_level', '0')}")
+          print(f"os_patch_level={p.get('os_patch_level', '2026-01')}")
+          print(f"expect_vermagic={p.get('expect_vermagic', '')}")
+          PY
+          {
+            echo "### 设备配置"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 设备 | ${{ inputs.device_profile }} |"
+            echo "| 内核 | ${{ steps.profile.outputs.kernel_version }}.${{ steps.profile.outputs.sub_level }} |"
+            echo "| 期望 vermagic | ${{ steps.profile.outputs.expect_vermagic }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: "${{ inputs.device_profile }} / ${{ inputs.kernelsu_variant }}"
+    needs: resolve-device
+    uses: ./.github/workflows/build.yml
+    secrets: inherit
+    with:
+      device_profile: ${{ inputs.device_profile }}
+      android_version: ${{ needs.resolve-device.outputs.android_version }}
+      kernel_version: ${{ needs.resolve-device.outputs.kernel_version }}
+      sub_level: ${{ needs.resolve-device.outputs.sub_level }}
+      os_patch_level: ${{ needs.resolve-device.outputs.os_patch_level }}
+      ksu_variant: ${{ inputs.kernelsu_variant }}
+      version: ${{ inputs.version || '' }}
+      build_time: ${{ inputs.build_time || '' }}
+      use_zram: ${{ inputs.use_zram }}
+      use_bbg: ${{ inputs.use_bbg }}
+      use_kpm: ${{ inputs.use_kpm }}
+      use_rekernel: ${{ inputs.use_rekernel || false }}
+      use_nomount: ${{ inputs.use_nomount || false }}
+      use_networking: ${{ inputs.use_networking || false }}
+      cve_2026_43499_patch: ${{ inputs.cve_2026_43499_patch || false }}
+      export_susfs_patches: false
+      supp_op: ${{ inputs.supp_op || false }}
+      enable_susfs: ${{ inputs.ksu_mode != '禁用SUSFS' && inputs.ksu_mode != '禁用KSU' }}
+      ksu_mode: ${{ inputs.ksu_mode || '关闭' }}
+      droidspaces: ${{ inputs.droidspaces || 'off' }}
+      droidspaces_ntsync: ${{ inputs.droidspaces_ntsync || false }}
+      artifact_upload_mode: ${{ inputs.artifact_upload_mode }}
+
+  get-ksu-manager:
+    uses: ./.github/workflows/get-manager.yml
+    secrets: inherit
+    with:
+      kernelsu_variant: ${{ inputs.kernelsu_variant }}

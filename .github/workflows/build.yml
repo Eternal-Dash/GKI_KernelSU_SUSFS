@@ -30,6 +30,12 @@ on:
   workflow_call:
     inputs:
       # ==================== 基础配置 ====================
+      device_profile:
+        # 留空 = AOSP 纯 GKI（原有行为）；填 data/devices/<id>.json 的 id = 走该设备谱系
+        required: false
+        type: string
+        default: ""
+
       android_version:
         required: true
         type: string
@@ -135,6 +141,19 @@ jobs:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
+      # ---- 设备谱系默认值（AOSP 纯 GKI）；加载 profile 后会被覆盖 ----
+      DEVICE_PROFILE: ""
+      SOURCE_TYPE: "aosp"
+      LOCALVERSION_MODE: "overwrite"
+      PACK_MODE: "boot-img"
+      EXPECT_VERMAGIC: ""
+      VERMAGIC_STRICT: "false"
+      BUILD_CMD: ""
+      MANIFEST_REPOS: ""
+      MANIFEST_BRANCH: ""
+      MANIFEST_FILE: ""
+      REJECT_STRICT: "false"
+      SUSFS_KMI: ""
 
     steps:
       - name: 构建信息摘要
@@ -234,6 +253,7 @@ jobs:
           cat >> $GITHUB_ENV << EOF
           CONFIG=$CONFIG
           KERNEL_ROOT=$KERNEL_ROOT
+          KERNEL_SYNC_ROOT=$KERNEL_ROOT
           LEGACY_SUKISU_CONFIG=$LEGACY_SUKISU_CONFIG
           DEFCONFIG=$KERNEL_ROOT/common/arch/arm64/configs/gki_defconfig
           SUSFS4KSU=$GITHUB_WORKSPACE/susfs4ksu
@@ -247,6 +267,29 @@ jobs:
           UNPACK_BOOTIMG=$GITHUB_WORKSPACE/mkbootimg/unpack_bootimg.py
           BOOT_SIGN_KEY_PATH=$GITHUB_WORKSPACE/kernel-build-tools/linux-x86/share/avb/testkey_rsa2048.pem
           EOF
+
+          # ---------- 设备谱系加载 ----------
+          # 为空时完全走 AOSP 逻辑，行为与改造前一致。
+          if [ -n "${{ inputs.device_profile }}" ]; then
+            PROFILE_ENV_FILE="$(mktemp)"
+            python3 "$GITHUB_WORKSPACE/scripts/oneplus/load_profile.py" "${{ inputs.device_profile }}" > "$PROFILE_ENV_FILE"
+            cat "$PROFILE_ENV_FILE" >> "$GITHUB_ENV"
+            # $GITHUB_ENV 只对后续步骤生效，本步骤内用 set -a 回读（值里可能有空格）
+            set -a
+            . "$PROFILE_ENV_FILE"
+            set +a
+            rm -f "$PROFILE_ENV_FILE"
+            mkdir -p "$KERNEL_SYNC_ROOT" "$KERNEL_ROOT"
+            echo "设备配置: $DEVICE_NAME ($DEVICE_PROFILE)"
+            echo "源码根目录: $KERNEL_SYNC_ROOT"
+            echo "构建入口: $KERNEL_ROOT"
+            echo "构建命令: ${BUILD_CMD:-(AOSP bazel)}"
+            echo "版本串策略: $LOCALVERSION_MODE"
+            case ",$PROFILE_KSU_VARIANTS," in
+              *",${{ inputs.ksu_variant }},"*) : ;;
+              *) echo "::warning::设备配置未声明支持 ${{ inputs.ksu_variant }}，可选项为: $PROFILE_KSU_VARIANTS" ;;
+            esac
+          fi
 
           mkdir -p "$GITHUB_WORKSPACE/git-repo"
           # storage.googleapis.com 偶发 TLS 握手失败（curl 退出码 35），全量构建 80+ 个
@@ -468,7 +511,85 @@ jobs:
           echo "REMOTE_BRANCH=$REMOTE_BRANCH" >> $GITHUB_ENV
           echo "TAG_FALLBACK=$TAG_FALLBACK" >> $GITHUB_ENV
 
+      - name: 解析一加清单并同步内核源码
+        if: env.SOURCE_TYPE == 'oplus'
+        working-directory: ${{ env.KERNEL_SYNC_ROOT }}
+        run: |
+          set -uo pipefail
+          echo "同步根目录: $PWD"
+          echo "清单候选: $MANIFEST_REPOS"
+          echo "目标清单: $MANIFEST_BRANCH / $MANIFEST_FILE"
+
+          # 三级清单回退（思路参考 Numbersf/Action-Build）：
+          # 官方仓库分支被改名/删除时不至于整条流水线直接失败。
+          FOUND_REPO=""
+          for ENTRY in $MANIFEST_REPOS; do
+            OWNER=${ENTRY%%/*}
+            NAME=${ENTRY##*/}
+            URL="https://raw.githubusercontent.com/$OWNER/$NAME/$MANIFEST_BRANCH/$MANIFEST_FILE"
+            echo "探测 $URL"
+            if curl -sfI --retry 3 --retry-delay 3 --connect-timeout 15 "$URL" >/dev/null; then
+              echo "命中清单: $ENTRY@$MANIFEST_BRANCH/$MANIFEST_FILE"
+              FOUND_REPO="$ENTRY"
+              break
+            fi
+          done
+
+          if [ -z "$FOUND_REPO" ]; then
+            echo "::error::所有候选清单仓库都不存在 $MANIFEST_BRANCH/$MANIFEST_FILE，请检查 data/devices/$DEVICE_PROFILE.json"
+            exit 1
+          fi
+          echo "MANIFEST_REPO=$FOUND_REPO" >> "$GITHUB_ENV"
+
+          MAX_ATTEMPTS=3
+          SYNC_TIMEOUT=25m
+          attempt=1
+          while :; do
+            echo "第 $attempt/$MAX_ATTEMPTS 次 repo init + sync（单次超时 $SYNC_TIMEOUT）"
+            df -h "$PWD" | tail -n +2 || true
+            rc=0
+            if $REPO init --depth=1 -u "https://github.com/$FOUND_REPO.git" \
+                 -b "$MANIFEST_BRANCH" -m "$MANIFEST_FILE" \
+                 --no-clone-bundle --no-tags; then
+              FLAGS="-c -j4 --jobs-checkout=4 --no-tags --no-clone-bundle --retry-fetches=3"
+              [ "$attempt" -gt 1 ] && FLAGS="$FLAGS --force-sync"
+              timeout -k 60 "$SYNC_TIMEOUT" $REPO sync $FLAGS || rc=$?
+              if [ "$rc" -eq 0 ]; then
+                echo "一加内核源码同步成功（第 $attempt 次）"
+                break
+              fi
+              [ "$rc" -eq 124 ] && echo "repo sync 超时（$SYNC_TIMEOUT）" || echo "repo sync 失败，退出码 $rc"
+            else
+              rc=1
+              echo "repo init 失败"
+            fi
+
+            if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
+              echo "::error::一加源码同步连续 $MAX_ATTEMPTS 次失败，先看上方清单探测与 repo 输出"
+              exit "$rc"
+            fi
+            if [ "$attempt" -eq $((MAX_ATTEMPTS - 1)) ]; then
+              echo "清空同步根目录后重来"
+              find "$PWD" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+            fi
+            sleep 20
+            attempt=$((attempt + 1))
+          done
+
+          echo "=== 同步结果 ==="
+          ls -la "$KERNEL_SYNC_ROOT" | head -20
+          ls -la "$KERNEL_ROOT" | head -20
+          if [ -d "$KERNEL_ROOT/common" ] && [ -d "$KERNEL_ROOT/oplus" ]; then
+            echo "布局检查通过: kernel_platform/{common,oplus} 均存在"
+          else
+            echo "::warning::kernel_platform 布局与预期不同，后续构建步骤可能找不到入口"
+          fi
+          git -C "$KERNEL_ROOT/common" log -1 --format='common HEAD: %H %cd %s' || true
+          git -C "$KERNEL_ROOT/msm-kernel" log -1 --format='msm-kernel HEAD: %H %cd %s' || true
+
+
       - name: 应用 Stock Config 伪装
+        if: env.SOURCE_TYPE != 'oplus'
         run: |
           STOCK_SRC="$GITHUB_WORKSPACE/config/stock_defconfig"
           STOCK_DST="$KERNEL_ROOT/common/arch/arm64/configs/stock_defconfig"
@@ -516,7 +637,7 @@ jobs:
 
       # 以同步后的实际 SUBLEVEL 判断，避免对已包含上游修复的 LTS 重复打补丁
       - name: 自动应用 CVE-2026-43499 rtmutex 修复链
-        if: inputs.cve_2026_43499_patch
+        if: inputs.cve_2026_43499_patch && env.SOURCE_TYPE != 'oplus'
         working-directory: ${{ env.KERNEL_ROOT }}/common
         run: |
           bash "$GITHUB_WORKSPACE/security_patch/apply_cve_2026_43499.sh" \
@@ -525,6 +646,7 @@ jobs:
             "$GITHUB_WORKSPACE/security_patch"
 
       - name: 修复 glibc 2.38 兼容性
+        if: env.SOURCE_TYPE != 'oplus'
         working-directory: ${{ env.KERNEL_ROOT }}/common
         run: |
           RAW_SUB="${{ inputs.sub_level }}"
@@ -553,7 +675,7 @@ jobs:
           fi
 
       - name: 添加一加 8E 处理器支持
-        if: inputs.supp_op
+        if: inputs.supp_op && env.SOURCE_TYPE != 'oplus'
         working-directory: ${{ env.KERNEL_ROOT }}/common/drivers
         run: |
           echo "下载一加 8E 支持补丁..."
@@ -943,7 +1065,9 @@ jobs:
             return "$rc"
           }
 
-          SUSFS_BRANCH="gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}"
+          # 一加设备：系统是 android16，内核却是 6.6（KMI 属 android15 谱系），
+          # SUSFS 分支必须跟内核走，否则会去 clone 并不存在的 gki-android16-6.6。
+          SUSFS_BRANCH="gki-${SUSFS_KMI:-${{ inputs.android_version }}}-${{ inputs.kernel_version }}"
 
           echo "克隆 SUSFS (分支: $SUSFS_BRANCH)..."
           if [ -n "$LEGACY_SUKISU_CONFIG" ]; then
@@ -1362,7 +1486,7 @@ jobs:
           fi
 
       - name: 修复 6.6 WiFi/蓝牙兼容性（三星 + 小米）
-        if: inputs.kernel_version == '6.6'
+        if: inputs.kernel_version == '6.6' && env.SOURCE_TYPE != 'oplus'
         working-directory: ${{ env.KERNEL_ROOT }}/common
         run: |
           ensure_line_once() {
@@ -1649,7 +1773,11 @@ jobs:
             fi
           fi
 
-          sed -i 's/check_defconfig//' ./common/build.config.gki
+          if [ -f ./common/build.config.gki ]; then
+            sed -i 's/check_defconfig//' ./common/build.config.gki
+          else
+            echo "未找到 common/build.config.gki，跳过（非 Kleaf 布局）"
+          fi
 
       - name: 添加 SUSFS 配置
         if: inputs.enable_susfs
@@ -1675,6 +1803,9 @@ jobs:
           fi
 
       - name: 配置内核名称
+        # localversion_mode=keep 的设备（如所有一加 OKI 设备）绝不能改写版本串，
+        # 否则 vermagic 与 vendor_dlkm 里的厂商模块对不上，刷完直接不开机。
+        if: env.LOCALVERSION_MODE != 'keep'
         working-directory: ${{ env.KERNEL_ROOT }}
         run: |
           if [ -f "build/build.sh" ]; then
@@ -1696,12 +1827,18 @@ jobs:
             cd ./common
             BID="ab$((RANDOM % 90000000 + 10000000))"
             GHASH=$(git rev-parse --verify HEAD | cut -c1-13)
-            case "${{ inputs.android_version }}-${{ inputs.kernel_version }}" in
-              "android14-6.1")  KMI_TAG="android14-11" ;;
-              "android15-6.6")  KMI_TAG="android15-8" ;;
-              "android16-6.12") KMI_TAG="android16-5" ;;
-              *) KMI_TAG="${{ inputs.android_version }}" ;;
-            esac
+            # KMI tag 改为查表（data/kmi-map.json），不再在工作流里写死；
+            # 查不到时退回 android_version，与改造前行为一致。
+            KMI_KEY="${{ inputs.android_version }}-${{ inputs.kernel_version }}"
+            KMI_TAG=$(python3 - "$GITHUB_WORKSPACE/data/kmi-map.json" "$KMI_KEY" "${{ inputs.android_version }}" <<'PY'
+          import json, sys
+          try:
+              m = json.load(open(sys.argv[1], encoding="utf-8"))
+          except Exception:
+              m = {}
+          print(m.get(sys.argv[2], sys.argv[3]))
+          PY
+            )
 
             if [ "${{ inputs.kernel_version }}" = "6.1" ]; then
               KMI_LOCAL="-${KMI_TAG}-g${GHASH}-${BID}-4k"
@@ -1790,6 +1927,20 @@ jobs:
               echo "当前 SUSFS 最新提交日期: ${SUSFS_LATEST_COMMIT_DATE:-未启用}"
               set -ex
               cd "$KERNEL_ROOT"
+
+              # ---- 设备谱系分流：一加 OKI 用官方脚本，AOSP 用下方 bazel/build.sh ----
+              if [ "$SOURCE_TYPE" = "oplus" ]; then
+                if [ -z "$BUILD_CMD" ]; then
+                  echo "::error::设备配置缺少 build_cmd" >&2
+                  exit 1
+                fi
+                echo "一加构建命令: $BUILD_CMD"
+                echo "平台: ${PLATFORM:-未知} / 变体: ${BUILD_METHOD:-未知}"
+                $BUILD_CMD
+                echo "=== 编译产物 ==="
+                find "$KERNEL_ROOT/out" -maxdepth 5 -name Image -type f 2>/dev/null | head -20 || true
+                exit 0
+              fi
 
               sed -i 's/BUILD_SYSTEM_DLKM=1/BUILD_SYSTEM_DLKM=0/' ./common/build.config.gki.aarch64
               sed -i '/MODULES_ORDER=android\/gki_aarch64_modules/d' ./common/build.config.gki.aarch64
@@ -1899,6 +2050,12 @@ jobs:
               break
             fi
           done
+          # 一加 OKI 的产物落在 kernel_platform/out 深层目录，用 find 兜底定位
+          if [ -z "$TARGET_PATH" ] && [ -d "$KERNEL_ROOT/out" ]; then
+            FOUND_IMG=$(find "$KERNEL_ROOT/out" -name Image -type f 2>/dev/null | head -n 1)
+            [ -n "$FOUND_IMG" ] && TARGET_PATH=$(dirname "$FOUND_IMG")
+          fi
+
           if [ -z "$TARGET_PATH" ]; then
             echo "::error::未找到编译产物 Image，无法注入 KernelPatch 宿主"
             exit 1
@@ -1939,7 +2096,66 @@ jobs:
             echo "SKIP_LZ4_IMAGE=true" >> $GITHUB_ENV
           fi
 
+      - name: 校验版本串并准备内核产物（一加）
+        if: env.SOURCE_TYPE == 'oplus'
+        run: |
+          set -uo pipefail
+          command -v strings >/dev/null 2>&1 || sudo apt-get install -y -qq binutils >/dev/null 2>&1 || true
+
+          IMG=$(find "$KERNEL_ROOT/out" -maxdepth 6 -name Image -type f 2>/dev/null | head -n 1)
+          if [ -z "$IMG" ]; then
+            echo "::error::未找到 Image 产物，构建未真正完成"
+            exit 1
+          fi
+          echo "产物: $IMG ($(stat -c%s "$IMG" 2>/dev/null || echo '?') bytes)"
+
+          BUILT_VER=$(strings "$IMG" | grep -m1 "Linux version" | awk '{print $3}' || true)
+          echo "实际版本串: ${BUILT_VER:-未知}"
+
+          VERMAGIC_OK=false
+          if [ -n "$EXPECT_VERMAGIC" ] && [ "$BUILT_VER" = "$EXPECT_VERMAGIC" ]; then
+            VERMAGIC_OK=true
+          fi
+
+          {
+            echo "### 版本串自检"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 期望 vermagic | ${EXPECT_VERMAGIC:-未配置} |"
+            echo "| 实际版本串 | ${BUILT_VER:-未知} |"
+            if [ "$VERMAGIC_OK" = "true" ]; then
+              echo "| 结论 | 一致，厂商 vendor_dlkm 模块可加载 |"
+            else
+              echo "| 结论 | 不一致，刷入后模块会被拒载（黑屏/无限重启） |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$VERMAGIC_OK" != "true" ]; then
+            if [ "$VERMAGIC_STRICT" = "true" ]; then
+              echo "::error::vermagic 与期望值不一致（实际 ${BUILT_VER:-未知}，期望 $EXPECT_VERMAGIC）"
+              exit 1
+            fi
+            echo "::warning::vermagic 与期望值不一致，产物仅作调试用，不建议刷入"
+          fi
+
+          cp -f "$IMG" "$GITHUB_WORKSPACE/Image"
+          echo "IMAGE_PATH=$IMG" >> "$GITHUB_ENV"
+
+          # AnyKernel3 只替换 boot 里的 Image：保留原厂 ramdisk / init_boot，
+          # 厂商模块继续由 stock vendor_dlkm 提供，避免模块与内核不同源。
+          if [ -f "$ANYKERNEL3/anykernel.sh" ]; then
+            sed -i "s|^block=.*|block=/dev/block/bootdevice/by-name/$AK3_BLOCK;|" "$ANYKERNEL3/anykernel.sh"
+            sed -i "s/^do.devicecheck=.*/do.devicecheck=$AK3_DEVICECHECK/" "$ANYKERNEL3/anykernel.sh"
+            sed -i "s/^do.modules=.*/do.modules=$AK3_DO_MODULES/" "$ANYKERNEL3/anykernel.sh"
+            echo "=== AnyKernel3 关键配置 ==="
+            grep -E '^(block|do\.|supported)' "$ANYKERNEL3/anykernel.sh" || true
+          else
+            echo "::warning::未找到 anykernel.sh，跳过 AK3 配置"
+          fi
+
       - name: 准备 Boot 镜像
+        if: env.SOURCE_TYPE != 'oplus'
         run: |
           mkdir -p bootimgs
 
@@ -2009,7 +2225,7 @@ jobs:
           fi
 
       - name: 构建 Boot 镜像 (Android 13+)
-        if: inputs.android_version == 'android13' || inputs.android_version == 'android14' || inputs.android_version == 'android15' || inputs.android_version == 'android16'
+        if: (inputs.android_version == 'android13' || inputs.android_version == 'android14' || inputs.android_version == 'android15' || inputs.android_version == 'android16') && env.SOURCE_TYPE != 'oplus'
         working-directory: bootimgs
         run: |
           gzip -n -k -f -9 ./Image > ./Image.gz
@@ -2029,6 +2245,35 @@ jobs:
           else
             echo "::warning::缺少 Image.lz4，跳过 boot-lz4.img"
           fi
+
+      - name: 补丁冲突检查
+        if: always()
+        run: |
+          echo "扫描未合并的补丁片段（.rej）..."
+          REJS=$(find "$KERNEL_ROOT" -name '*.rej' -type f 2>/dev/null | head -n 50)
+          if [ -z "$REJS" ]; then
+            echo "无 .rej，补丁全部干净应用"
+            exit 0
+          fi
+          echo "发现补丁冲突:"
+          echo "$REJS"
+          echo "$REJS" | while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            echo "----- $f -----"
+            head -n 30 "$f" || true
+          done
+          {
+            echo "### 补丁冲突"
+            echo ""
+            echo '```'
+            echo "$REJS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$REJECT_STRICT" = "true" ]; then
+            echo "::error::存在未合并的补丁片段，产物不可信"
+            exit 1
+          fi
+          echo "::warning::存在补丁冲突，请核对上方 .rej 内容（设置 REJECT_STRICT=true 可让构建直接失败）"
 
       - name: 收集补丁冲突文件
         if: always()
