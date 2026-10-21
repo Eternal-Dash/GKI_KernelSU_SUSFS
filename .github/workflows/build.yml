@@ -1934,12 +1934,33 @@ jobs:
                   ls -la "$KERNEL_SYNC_ROOT" >&2 || true
                   exit 1
                 fi
-                BUILD_DIR=$(cd "$(dirname "$BUILD_SCRIPT")/../.." && pwd)
+                # 脚本第一行就 source kernel_platform/oplus/build/oplus_setup.sh，
+                # 且内部所有路径都是相对同步根目录的，所以必须从同步根目录执行。
+                BUILD_DIR=$(cd "$(dirname "$BUILD_SCRIPT")/../../.." && pwd)
                 echo "构建脚本: $BUILD_SCRIPT"
-                echo "构建目录: $BUILD_DIR"
+                echo "构建根目录: $BUILD_DIR"
                 echo "平台: ${PLATFORM:-未知} / 变体: ${BUILD_METHOD:-未知}"
+
+                if [ ! -f "$BUILD_DIR/kernel_platform/oplus/build/oplus_setup.sh" ]; then
+                  echo "::error::oplus_setup.sh 不存在，源码布局与预期不符" >&2
+                  ls -la "$BUILD_DIR" >&2 || true
+                  exit 1
+                fi
+
                 cd "$BUILD_DIR"
-                ./oplus/build/oplus_build_kernel.sh "${PLATFORM}" "${BUILD_METHOD}"
+                set +e
+                ./kernel_platform/oplus/build/oplus_build_kernel.sh "${PLATFORM}" "${BUILD_METHOD}"
+                RC=$?
+                set -e
+                if [ "$RC" -ne 0 ]; then
+                  echo "::error::一加构建脚本退出码 $RC，以下为其自身日志尾部"
+                  LATEST_LOG=$(ls -t "$BUILD_DIR"/LOGDIR/*.log 2>/dev/null | head -n 1 || true)
+                  if [ -n "$LATEST_LOG" ]; then
+                    echo "日志文件: $LATEST_LOG"
+                    tail -n 100 "$LATEST_LOG" || true
+                  fi
+                  exit "$RC"
+                fi
                 echo "=== 编译产物 ==="
                 find "$KERNEL_SYNC_ROOT" -maxdepth 6 -name Image -type f 2>/dev/null | head -20 || true
                 exit 0
