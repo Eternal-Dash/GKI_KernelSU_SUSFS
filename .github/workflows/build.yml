@@ -141,19 +141,10 @@ jobs:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
-      # ---- 设备谱系默认值（AOSP 纯 GKI）；加载 profile 后会被覆盖 ----
-      DEVICE_PROFILE: ""
-      SOURCE_TYPE: "aosp"
-      LOCALVERSION_MODE: "overwrite"
-      PACK_MODE: "boot-img"
-      EXPECT_VERMAGIC: ""
-      VERMAGIC_STRICT: "false"
-      BUILD_CMD: ""
-      MANIFEST_REPOS: ""
-      MANIFEST_BRANCH: ""
-      MANIFEST_FILE: ""
-      REJECT_STRICT: "false"
-      SUSFS_KMI: ""
+      # 注意：这里不要放设备谱系变量（SOURCE_TYPE / LOCALVERSION_MODE 等）。
+      # job 级 env 的优先级高于 $GITHUB_ENV，一旦在这里给默认值，
+      # load_profile.py 写进 $GITHUB_ENV 的真实值就会被覆盖（踩过一次）。
+      # AOSP 路径下这些变量为空即可，所有 if 条件都按「空不等于 oplus/keep」设计。
 
     steps:
       - name: 构建信息摘要
@@ -2270,7 +2261,7 @@ jobs:
             echo "$REJS"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$REJECT_STRICT" = "true" ]; then
+          if [ "${REJECT_STRICT:-false}" = "true" ]; then
             echo "::error::存在未合并的补丁片段，产物不可信"
             exit 1
           fi
