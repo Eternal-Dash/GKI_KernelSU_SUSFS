@@ -144,6 +144,59 @@ fi
 
 patch -p1 < "$SUSFS_PATCH" || true
 
+# ---------------------------------------------------------------------------
+# 兜底修复：较老内核（如 6.1.138）上 fs/namespace.c 的 include/声明 hunk 会因
+# 上下文漂移被拒（补丁要求 '#include <trace/hooks/blk.h>'，而该内核没有这行），
+# 但同一补丁里 namespace.c 的**调用点**都打上了，于是编译期报一堆
+# undeclared identifier（DEFAULT_KSU_MNT_ID / CL_COPY_MNT_NS 等）。
+# 这里按 .rej 的实际内容把缺失部分补齐；hunk 没被拒时完全不动。
+# ---------------------------------------------------------------------------
+if [ -f fs/namespace.c.rej ] && grep -q 'susfs_def.h' fs/namespace.c.rej; then
+  echo "检测到 fs/namespace.c 的 SUSFS hunk 被拒，按 .rej 内容补齐缺失声明"
+
+  if ! grep -q 'susfs_def.h' fs/namespace.c; then
+    awk '
+      /#include <linux\/mnt_idmapping.h>/ && !d1 {
+        print
+        print "#if defined(CONFIG_KSU_SUSFS_SUS_MOUNT) || defined(CONFIG_KSU_SUSFS_TRY_UMOUNT)"
+        print "#include <linux/susfs_def.h>"
+        print "#endif"
+        d1 = 1
+        next
+      }
+      { print }
+    ' fs/namespace.c > fs/namespace.c.tmp && mv fs/namespace.c.tmp fs/namespace.c
+    echo "  + 已补 #include <linux/susfs_def.h>"
+  fi
+
+  # 注意：这里不能用函数名判断——调用点里本来就有该字符串，会把插入跳过
+  if ! grep -q 'define CL_COPY_MNT_NS' fs/namespace.c; then
+    awk '
+      { print }
+      /#include "internal.h"/ && !done {
+        print ""
+        print "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT"
+        print "extern bool susfs_is_current_ksu_domain(void);"
+        print "extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;"
+        print "#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */"
+        print "#endif"
+        done = 1
+      }
+    ' fs/namespace.c > fs/namespace.c.tmp && mv fs/namespace.c.tmp fs/namespace.c
+    echo "  + 已补 extern 声明与 CL_COPY_MNT_NS"
+  fi
+
+  # 校验：缺一不可，否则后面编译必然失败
+  MISSING=0
+  grep -q 'susfs_def.h' fs/namespace.c || { echo "::error::namespace.c 仍缺 susfs_def.h"; MISSING=1; }
+  grep -q 'define CL_COPY_MNT_NS' fs/namespace.c || { echo "::error::namespace.c 仍缺 extern 声明"; MISSING=1; }
+  if [ "$MISSING" != "0" ]; then
+    exit 1
+  fi
+  rm -f fs/namespace.c.rej
+  echo "  ✔ namespace.c 上下文补齐完成"
+fi
+
 # 为尚未提供 SU 会话 FD 接口的 SukiSU/BakaSU 恢复旧版 exec hook 行为
 EXEC_HELPER=""
 if [[ "$KSU_VARIANT" == SukiSU* || "$KSU_VARIANT" == "BakaSU" ]]; then
