@@ -56,5 +56,31 @@
       "os_patch_level": "2025-02",
       "expect_vermagic": "6.6.66-android15-8-g29d86c5fc9dd-abogki428889875-4k"
     }
+  },
+  "firmware_map": {
+    "PLQ110_16.0.9.401": {
+      "kernel_version": "6.6.118",
+      "common": "65b954a773b183a9999b06bb1b2f921f12eaaf11",
+      "msm": "affd9c73e846c6a0e4c8d564f5baedd448a65570",
+      "modules": "b8d60e4ca773ae7ffcfa62fe9611f2454561b556"
+    },
+    "PLQ110_16.0.5.700": {
+      "kernel_version": "6.6.89",
+      "common": "c1802dd6f3343e71c166a3c67c50554c81880b6e",
+      "msm": "4b46016def4bb2e0a6f47aee6ea201d5d058bd96",
+      "modules": "defe9eb52d7748fd4f159e1837160b7487119152"
+    },
+    "PLQ110_16.0.2.403": {
+      "kernel_version": "6.6.89",
+      "common": "90bc9cf406bf7cbc974132abfb633afab0f5bde0",
+      "msm": "088bb44588f0af3752811e99ae4bf74433d14e2c",
+      "modules": "a71963e2640fa98a759f46fd554268c9efa948c9"
+    },
+    "PLQ110_16.0.0.205": {
+      "kernel_version": "6.6.89",
+      "common": "36e8d60d4d1c97c08117cb0e733186515357cff3",
+      "msm": "4b46016def4bb2e0a6f47aee6ea201d5d058bd96",
+      "modules": "6a2c49d527748e1f1c9a2980ef843a73b7936eed"
+    }
   }
 }

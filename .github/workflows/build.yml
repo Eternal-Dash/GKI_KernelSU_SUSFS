@@ -42,6 +42,18 @@ on:
         type: string
         default: ""
 
+      kernel_version_target:
+        # 直接填 6.6.89 / 6.6.118，会解析到官方固件打点并 checkout 对应 commit
+        required: false
+        type: string
+        default: ""
+
+      firmware:
+        # 更精确：直接指定固件版本，如 PLQ110_16.0.9.401
+        required: false
+        type: string
+        default: ""
+
       fast_image:
         # 只产 Image 就收工：编出 Image 后终止后续模块打包，AK3 只需要 Image
         required: false
@@ -277,8 +289,9 @@ jobs:
             # 写 $GITHUB_ENV 必须用裸值；source 必须用 shlex 转义版本，
             # 否则 "一加 Ace 6 (PLQ110 / ktm)" 这类值会被 shell 当成命令执行
             SHELL_ENV_FILE="$(mktemp)"
-            python3 "$GITHUB_WORKSPACE/scripts/oneplus/load_profile.py" "${{ inputs.device_profile }}" --format=github >> "$GITHUB_ENV"
-            python3 "$GITHUB_WORKSPACE/scripts/oneplus/load_profile.py" "${{ inputs.device_profile }}" --format=shell > "$SHELL_ENV_FILE"
+            PROFILE_ARGS=("${{ inputs.device_profile }}" "--kernel-version=${{ inputs.kernel_version_target }}" "--firmware=${{ inputs.firmware }}")
+            python3 "$GITHUB_WORKSPACE/scripts/oneplus/load_profile.py" "${PROFILE_ARGS[@]}" --format=github >> "$GITHUB_ENV"
+            python3 "$GITHUB_WORKSPACE/scripts/oneplus/load_profile.py" "${PROFILE_ARGS[@]}" --format=shell > "$SHELL_ENV_FILE"
             set -a
             . "$SHELL_ENV_FILE"
             set +a
@@ -596,6 +609,37 @@ jobs:
           git -C "$KERNEL_ROOT/common" log -1 --format='common HEAD: %H %cd %s' || true
           git -C "$KERNEL_ROOT/msm-kernel" log -1 --format='msm-kernel HEAD: %H %cd %s' || true
 
+
+      - name: 切换到指定固件版本
+        if: env.SOURCE_TYPE == 'oplus' && env.REV_COMMON != ''
+        run: |
+          set -uo pipefail
+          echo "目标固件: ${RESOLVED_FIRMWARE:-未指定}"
+          FAIL=0
+          switch_rev() {
+            local dir="$1" rev="$2" name="$3"
+            [ -n "$rev" ] || return 0
+            echo "--- $name -> ${rev:0:12}"
+            git -C "$dir" fetch --depth=1 origin "$rev" >/dev/null 2>&1 || true
+            if git -C "$dir" checkout -f "$rev" >/dev/null 2>&1; then
+              git -C "$dir" log -1 --format='    %h %cd %s' || true
+            else
+              echo "::error::$name 无法切换到 ${rev:0:12}"
+              FAIL=1
+            fi
+          }
+          switch_rev "$KERNEL_ROOT/common" "${REV_COMMON}" "common"
+          switch_rev "$KERNEL_ROOT/msm-kernel" "${REV_MSM}" "msm-kernel"
+          switch_rev "$KERNEL_SYNC_ROOT" "${REV_MODULES}" "modules_and_devicetree"
+
+          if [ "$FAIL" != "0" ]; then
+            echo "::error::固件版本切换失败，继续构建会得到不匹配的内核"
+            exit 1
+          fi
+
+          # 版本串里的 commit hash 取自 common HEAD，切完应当与目标固件一致
+          echo "=== 切换后 common 版本 ==="
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) =' "$KERNEL_ROOT/common/Makefile" || true
 
       - name: 应用 Stock Config 伪装
         if: env.SOURCE_TYPE != 'oplus'

@@ -34,6 +34,7 @@ def main():
     fmt = "github"
     variant = ""
     kernel_version_input = ""
+    firmware_input = ""
     for a in sys.argv[1:]:
         if a.startswith("--format="):
             fmt = a.split("=", 1)[1].strip()
@@ -41,6 +42,8 @@ def main():
             variant = a.split("=", 1)[1].strip()
         elif a.startswith("--kernel-version="):
             kernel_version_input = a.split("=", 1)[1].strip()
+        elif a.startswith("--firmware="):
+            firmware_input = a.split("=", 1)[1].strip()
         else:
             args.append(a)
 
@@ -85,16 +88,43 @@ def main():
         expect_v = v.get("expect_vermagic", expect_v) or expect_v
         print(f"内核版本: {vkey} -> {kernel}.{sub} / {patch} / {expect_v or '(未指定)'}", file=sys.stderr)
 
-    # 直接填版本号（如 6.6.66）：覆盖 sub_level，并自动查安全补丁级别
+    # 版本选择：--firmware=PLQ110_16.0.9.401 或 --kernel-version=6.6.89
+    # 通过 firmware_map 解析到三个仓库的真实 commit，repo sync 后再 checkout，
+    # 这样才是"真正按这个版本编译"，而不只是改个名字。
     expect_prefix = ""
-    if kernel_version_input:
-        m = re.match(r"^(\d+)\.(\d+)\.(\d+)$", kernel_version_input)
-        if not m:
-            die(f"kernel_version 格式应为 X.Y.Z（如 6.6.66），收到 {kernel_version_input}")
-        if f"{m.group(1)}.{m.group(2)}" != kernel:
-            die(f"版本 {kernel_version_input} 与设备配置的 {kernel} 不一致")
-        sub = m.group(3)
-        # 从 data/<kmi>/<kernel>.json 里查该子版本对应的安全补丁级别
+    rev_common = rev_msm = rev_modules = ""
+    resolved_fw = ""
+
+    fmap = p.get("firmware_map") or {}
+    if firmware_input or kernel_version_input:
+        if firmware_input:
+            if firmware_input not in fmap:
+                die(f"未知固件 {firmware_input}，可选: {', '.join(fmap.keys())}")
+            resolved_fw = firmware_input
+        else:
+            m = re.match(r"^(\d+)\.(\d+)\.(\d+)$", kernel_version_input)
+            if not m:
+                die(f"kernel_version 格式应为 X.Y.Z（如 6.6.89），收到 {kernel_version_input}")
+            if f"{m.group(1)}.{m.group(2)}" != kernel:
+                die(f"版本 {kernel_version_input} 与设备配置的 {kernel} 不一致")
+            cands = [fw for fw, v in fmap.items() if v.get("kernel_version") == kernel_version_input]
+            if not cands:
+                avail = sorted({v.get("kernel_version") for v in fmap.values() if v.get("kernel_version")})
+                die(f"官方源码历史里没有内核 {kernel_version_input}，可用: {', '.join(avail)}")
+            resolved_fw = cands[0]          # firmware_map 已按新到旧排序
+
+        info = fmap[resolved_fw]
+        rev_common = info.get("common") or ""
+        rev_msm = info.get("msm") or ""
+        rev_modules = info.get("modules") or ""
+        if info.get("kernel_version"):
+            kv = info["kernel_version"]
+            sub = kv.split(".")[2]
+            expect_prefix = f"{kv}-"
+        print(f"版本解析: {resolved_fw} -> 内核 {info.get('kernel_version')}", file=sys.stderr)
+        print(f"  common={rev_common[:10]} msm={rev_msm[:10]} modules={rev_modules[:10]}", file=sys.stderr)
+
+        # 安全补丁级别仍按子版本号查表
         kmidir = os.path.join(WS, "data", p.get("susfs_kmi") or android)
         jf = os.path.join(kmidir, f"{kernel}.json")
         if os.path.isfile(jf):
@@ -105,17 +135,11 @@ def main():
                         break
             except Exception:
                 pass
-        expect_v = ""                       # 不知道 commit hash，只做前缀匹配
-        expect_prefix = f"{kernel_version_input}-"
-        vermagic_strict = True              # 用户明确指定了版本，不一致就应当失败
-        print(f"指定内核版本: {kernel_version_input} -> 安全补丁级别 {patch}，校验基准前缀 {expect_prefix}", file=sys.stderr)
+        expect_v = ""
 
     sync_root = os.path.join(WS, f"{p['source_type']}-{pid}")
     kernel_root = os.path.join(sync_root, "kernel_platform")
     config = f"{android}-{kernel}.{sub}"
-
-    if kernel_version_input:
-        strict = True
 
     kv = {
         "DEVICE_PROFILE": pid,
@@ -140,7 +164,11 @@ def main():
         "EXPECT_VERMAGIC": expect_v,
         "EXPECT_PREFIX": expect_prefix,
         "REQUESTED_KERNEL_VERSION": kernel_version_input,
-        "VERMAGIC_STRICT": "true" if (p.get("vermagic_strict") or kernel_version_input) else "false",
+        "RESOLVED_FIRMWARE": resolved_fw,
+        "REV_COMMON": rev_common,
+        "REV_MSM": rev_msm,
+        "REV_MODULES": rev_modules,
+        "VERMAGIC_STRICT": "true" if (p.get("vermagic_strict") or kernel_version_input or firmware_input) else "false",
         "PACK_MODE": pack.get("mode") or "anykernel",
         "AK3_BLOCK": pack.get("block") or "boot",
         "AK3_DO_MODULES": str(pack.get("do_modules", "0")),

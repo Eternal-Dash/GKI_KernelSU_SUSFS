@@ -35,6 +35,12 @@ on:
         type: string
         default: ""
 
+      firmware:
+        description: "（可选）精确指定固件版本，如 PLQ110_16.0.9.401；比内核版本号更精确"
+        required: false
+        type: string
+        default: ""
+
       kernel_variant:
         description: "（可选）内核版本预设键，data/devices/<id>.json 的 kernel_variants；kernel_version_target 优先"
         required: false
@@ -190,7 +196,8 @@ jobs:
           # 统一由 load_profile.py 输出，支持 --variant 选择内核版本
           OUT=$(python3 scripts/oneplus/load_profile.py "${{ inputs.device_profile }}" \
                 --variant="${{ inputs.kernel_variant }}" \
-                --kernel-version="${{ inputs.kernel_version_target }}" --format=outputs)
+                --kernel-version="${{ inputs.kernel_version_target }}" \
+                --firmware="${{ inputs.firmware }}" --format=outputs)
           echo "$OUT" >> "$GITHUB_OUTPUT"
           KV=$(printf '%s\n' "$OUT" | sed -n 's/^kernel_version=//p')
           S=$(printf '%s\n' "$OUT" | sed -n 's/^sub_level=//p')
@@ -215,6 +222,8 @@ jobs:
       device_profile: ${{ inputs.device_profile }}
       build_method: ${{ inputs.build_method }}
       fast_image: ${{ inputs.fast_image }}
+      kernel_version_target: ${{ inputs.kernel_version_target }}
+      firmware: ${{ inputs.firmware }}
       android_version: ${{ needs.resolve-device.outputs.android_version }}
       kernel_version: ${{ needs.resolve-device.outputs.kernel_version }}
       sub_level: ${{ needs.resolve-device.outputs.sub_level }}
