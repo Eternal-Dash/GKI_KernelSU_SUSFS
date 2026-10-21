@@ -29,11 +29,32 @@ on:
           - oneplus_ace_6
         default: oneplus_ace_6
 
+      kernel_version_target:
+        description: "直接填内核版本号，如 6.6.66 / 6.6.89（留空=按设备配置默认）"
+        required: false
+        type: string
+        default: ""
+
       kernel_variant:
-        description: "内核版本（data/devices/<id>.json 的 kernel_variants 键；留空=default）"
+        description: "（可选）内核版本预设键，data/devices/<id>.json 的 kernel_variants；kernel_version_target 优先"
         required: false
         type: string
         default: "default"
+
+      build_method:
+        description: "构建变体（perf=全量含厂商模块；consolidate=userdebug 全量）"
+        required: true
+        type: choice
+        options:
+          - perf
+          - consolidate
+        default: perf
+
+      fast_image:
+        description: "快速模式：只编到 Image 就收工（AK3 只需要 Image，可显著缩短时间）"
+        required: true
+        type: boolean
+        default: true
 
       # ==================== KernelSU 配置（与 main.yml 对齐） ====================
       kernelsu_variant:
@@ -168,7 +189,8 @@ jobs:
           fi
           # 统一由 load_profile.py 输出，支持 --variant 选择内核版本
           OUT=$(python3 scripts/oneplus/load_profile.py "${{ inputs.device_profile }}" \
-                --variant="${{ inputs.kernel_variant }}" --format=outputs)
+                --variant="${{ inputs.kernel_variant }}" \
+                --kernel-version="${{ inputs.kernel_version_target }}" --format=outputs)
           echo "$OUT" >> "$GITHUB_OUTPUT"
           KV=$(printf '%s\n' "$OUT" | sed -n 's/^kernel_version=//p')
           S=$(printf '%s\n' "$OUT" | sed -n 's/^sub_level=//p')
@@ -191,6 +213,8 @@ jobs:
     secrets: inherit
     with:
       device_profile: ${{ inputs.device_profile }}
+      build_method: ${{ inputs.build_method }}
+      fast_image: ${{ inputs.fast_image }}
       android_version: ${{ needs.resolve-device.outputs.android_version }}
       kernel_version: ${{ needs.resolve-device.outputs.kernel_version }}
       sub_level: ${{ needs.resolve-device.outputs.sub_level }}

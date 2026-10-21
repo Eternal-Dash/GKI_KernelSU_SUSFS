@@ -15,6 +15,7 @@
 """
 import json
 import os
+import re
 import shlex
 import sys
 
@@ -32,11 +33,14 @@ def main():
     args = []
     fmt = "github"
     variant = ""
+    kernel_version_input = ""
     for a in sys.argv[1:]:
         if a.startswith("--format="):
             fmt = a.split("=", 1)[1].strip()
         elif a.startswith("--variant="):
             variant = a.split("=", 1)[1].strip()
+        elif a.startswith("--kernel-version="):
+            kernel_version_input = a.split("=", 1)[1].strip()
         else:
             args.append(a)
 
@@ -81,9 +85,37 @@ def main():
         expect_v = v.get("expect_vermagic", expect_v) or expect_v
         print(f"内核版本: {vkey} -> {kernel}.{sub} / {patch} / {expect_v or '(未指定)'}", file=sys.stderr)
 
+    # 直接填版本号（如 6.6.66）：覆盖 sub_level，并自动查安全补丁级别
+    expect_prefix = ""
+    if kernel_version_input:
+        m = re.match(r"^(\d+)\.(\d+)\.(\d+)$", kernel_version_input)
+        if not m:
+            die(f"kernel_version 格式应为 X.Y.Z（如 6.6.66），收到 {kernel_version_input}")
+        if f"{m.group(1)}.{m.group(2)}" != kernel:
+            die(f"版本 {kernel_version_input} 与设备配置的 {kernel} 不一致")
+        sub = m.group(3)
+        # 从 data/<kmi>/<kernel>.json 里查该子版本对应的安全补丁级别
+        kmidir = os.path.join(WS, "data", p.get("susfs_kmi") or android)
+        jf = os.path.join(kmidir, f"{kernel}.json")
+        if os.path.isfile(jf):
+            try:
+                for e in json.load(open(jf, encoding="utf-8")).get("entries", []):
+                    if str(e.get("kernel")) == f"{kernel}.{sub}":
+                        patch = str(e.get("date") or patch)
+                        break
+            except Exception:
+                pass
+        expect_v = ""                       # 不知道 commit hash，只做前缀匹配
+        expect_prefix = f"{kernel_version_input}-"
+        vermagic_strict = True              # 用户明确指定了版本，不一致就应当失败
+        print(f"指定内核版本: {kernel_version_input} -> 安全补丁级别 {patch}，校验基准前缀 {expect_prefix}", file=sys.stderr)
+
     sync_root = os.path.join(WS, f"{p['source_type']}-{pid}")
     kernel_root = os.path.join(sync_root, "kernel_platform")
     config = f"{android}-{kernel}.{sub}"
+
+    if kernel_version_input:
+        strict = True
 
     kv = {
         "DEVICE_PROFILE": pid,
@@ -106,7 +138,9 @@ def main():
         "MANIFEST_FILE": manifest.get("file") or "",
         "LOCALVERSION_MODE": p.get("localversion_mode") or "keep",
         "EXPECT_VERMAGIC": expect_v,
-        "VERMAGIC_STRICT": "true" if p.get("vermagic_strict") else "false",
+        "EXPECT_PREFIX": expect_prefix,
+        "REQUESTED_KERNEL_VERSION": kernel_version_input,
+        "VERMAGIC_STRICT": "true" if (p.get("vermagic_strict") or kernel_version_input) else "false",
         "PACK_MODE": pack.get("mode") or "anykernel",
         "AK3_BLOCK": pack.get("block") or "boot",
         "AK3_DO_MODULES": str(pack.get("do_modules", "0")),
@@ -121,6 +155,8 @@ def main():
             ("PROFILE_SUB_LEVEL", "sub_level"),
             ("PROFILE_OS_PATCH_LEVEL", "os_patch_level"),
             ("EXPECT_VERMAGIC", "expect_vermagic"),
+            ("EXPECT_PREFIX", "expect_prefix"),
+            ("REQUESTED_KERNEL_VERSION", "requested_kernel_version"),
         ):
             print(f"{out_key}={kv[src_key]}")
     else:

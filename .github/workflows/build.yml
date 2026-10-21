@@ -36,6 +36,18 @@ on:
         type: string
         default: ""
 
+      build_method:
+        # 一加 OKI 变体：perf（全量，含厂商模块）/ consolidate。留空用设备配置里的值
+        required: false
+        type: string
+        default: ""
+
+      fast_image:
+        # 只产 Image 就收工：编出 Image 后终止后续模块打包，AK3 只需要 Image
+        required: false
+        type: boolean
+        default: false
+
       android_version:
         required: true
         type: string
@@ -277,6 +289,10 @@ jobs:
             echo "构建入口: $KERNEL_ROOT"
             echo "构建命令: ${BUILD_CMD:-(AOSP bazel)}"
             echo "版本串策略: $LOCALVERSION_MODE"
+            if [ -n "${{ inputs.build_method }}" ]; then
+              echo "BUILD_METHOD=${{ inputs.build_method }}" >> "$GITHUB_ENV"
+              echo "构建变体由输入覆盖为: ${{ inputs.build_method }}"
+            fi
             case ",$PROFILE_KSU_VARIANTS," in
               *",${{ inputs.ksu_variant }},"*) : ;;
               *) echo "::warning::设备配置未声明支持 ${{ inputs.ksu_variant }}，可选项为: $PROFILE_KSU_VARIANTS" ;;
@@ -1948,10 +1964,54 @@ jobs:
                 fi
 
                 cd "$BUILD_DIR"
-                set +e
-                ./kernel_platform/oplus/build/oplus_build_kernel.sh "${PLATFORM}" "${BUILD_METHOD}"
-                RC=$?
-                set -e
+
+                if [ "${{ inputs.fast_image }}" = "true" ]; then
+                  # 只产 Image 模式：AK3 只需要 Image，厂商模块用原厂 vendor_dlkm 的，
+                  # 因此 Image 一出现就终止，跳过后续全部模块编译与镜像打包。
+                  echo "FAST_IMAGE 模式：捕获到 Image 后即收工"
+                  set +e
+                  ./kernel_platform/oplus/build/oplus_build_kernel.sh "${PLATFORM}" "${BUILD_METHOD}" \
+                    > "$BUILD_DIR/oplus_build.out" 2>&1 &
+                  BPID=$!
+                  set -e
+                  FOUND=""
+                  for i in $(seq 1 240); do
+                    if ! kill -0 "$BPID" 2>/dev/null; then break; fi
+                    CAND=$(find "$KERNEL_SYNC_ROOT" -name Image -type f 2>/dev/null | grep -m1 "/out/" || true)
+                    if [ -n "$CAND" ]; then
+                      S1=$(stat -c%s "$CAND" 2>/dev/null || echo 0)
+                      sleep 20
+                      S2=$(stat -c%s "$CAND" 2>/dev/null || echo 0)
+                      if [ "$S1" = "$S2" ] && [ "$S1" -gt 1000000 ]; then
+                        FOUND="$CAND"
+                        echo "已产出 Image: $CAND ($S1 bytes)"
+                        break
+                      fi
+                    fi
+                    sleep 20
+                  done
+
+                  if [ -n "$FOUND" ]; then
+                    kill -TERM "$BPID" 2>/dev/null || true
+                    sleep 5
+                    kill -KILL "$BPID" 2>/dev/null || true
+                    wait "$BPID" 2>/dev/null || true
+                    echo "已在 Image 产出后终止编译，跳过模块编译与镜像打包"
+                    tail -n 15 "$BUILD_DIR/oplus_build.out" || true
+                    exit 0
+                  fi
+
+                  echo "FAST_IMAGE 未捕获到 Image，回退为等待完整构建"
+                  set +e
+                  wait "$BPID"
+                  RC=$?
+                  set -e
+                else
+                  set +e
+                  ./kernel_platform/oplus/build/oplus_build_kernel.sh "${PLATFORM}" "${BUILD_METHOD}"
+                  RC=$?
+                  set -e
+                fi
                 if [ "$RC" -ne 0 ]; then
                   echo "::error::一加构建脚本退出码 $RC，以下为其自身日志尾部"
                   LATEST_LOG=$(ls -t "$BUILD_DIR"/LOGDIR/*.log 2>/dev/null | head -n 1 || true)
@@ -2137,10 +2197,18 @@ jobs:
           BUILT_VER=$(strings "$IMG" | grep -m1 "Linux version" | awk '{print $3}' || true)
           echo "实际版本串: ${BUILT_VER:-未知}"
 
-          VERMAGIC_OK=false
-          if [ -n "$EXPECT_VERMAGIC" ] && [ "$BUILT_VER" = "$EXPECT_VERMAGIC" ]; then
-            VERMAGIC_OK=true
+          # 三种情况：精确匹配 / 前缀匹配（只知道版本号不知道 commit 时）/ 未配置基准
+          VERMAGIC_STATE="unset"
+          if [ -n "$EXPECT_VERMAGIC" ]; then
+            [ "$BUILT_VER" = "$EXPECT_VERMAGIC" ] && VERMAGIC_STATE="ok" || VERMAGIC_STATE="mismatch"
+          elif [ -n "$EXPECT_PREFIX" ]; then
+            case "$BUILT_VER" in
+              "$EXPECT_PREFIX"*) VERMAGIC_STATE="ok" ;;
+              *) VERMAGIC_STATE="mismatch" ;;
+            esac
           fi
+          VERMAGIC_OK=false
+          [ "$VERMAGIC_STATE" = "ok" ] && VERMAGIC_OK=true
 
           {
             echo "### 版本串自检"
@@ -2156,12 +2224,16 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$VERMAGIC_OK" != "true" ]; then
+          if [ "$VERMAGIC_STATE" = "mismatch" ]; then
             if [ "$VERMAGIC_STRICT" = "true" ]; then
-              echo "::error::vermagic 与期望值不一致（实际 ${BUILT_VER:-未知}，期望 $EXPECT_VERMAGIC）"
+              echo "::error::vermagic 不一致：实际 ${BUILT_VER:-未知}，期望 ${EXPECT_VERMAGIC:-${EXPECT_PREFIX}*}（该产物与厂商模块不匹配）"
               exit 1
             fi
-            echo "::warning::vermagic 与期望值不一致，产物仅作调试用，不建议刷入"
+            echo "::warning::vermagic 不一致：实际 ${BUILT_VER:-未知}，期望 ${EXPECT_VERMAGIC:-${EXPECT_PREFIX}*}"
+          elif [ "$VERMAGIC_STATE" = "unset" ]; then
+            echo "未配置版本串基准，跳过校验（可在 kernel_variants 里指定 expect_vermagic）"
+          else
+            echo "版本串校验通过: ${BUILT_VER}"
           fi
 
           cp -f "$IMG" "$GITHUB_WORKSPACE/Image"
