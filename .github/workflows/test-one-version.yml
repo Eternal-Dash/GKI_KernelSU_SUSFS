@@ -23,8 +23,13 @@ on:
         type: choice
         options: ["5.10", "5.15", "6.1", "6.6", "6.12"]
         default: "6.1"
+      kernel_full_version:
+        description: "★推荐：直接填完整版本号（如 6.1.138），自动拆出子版本号与构建日期"
+        required: false
+        type: string
+        default: ""
       sub_level:
-        description: "子版本号（如 138）"
+        description: "子版本号（如 138）；填了上面的完整版本号则此项被覆盖"
         required: true
         type: string
         default: "138"
@@ -77,6 +82,16 @@ on:
         required: false
         type: string
         default: ""
+      version:
+        description: "自定义内核版本名（留空=按规则自动生成，如 -android14-11-gxxxx-ab12345678）"
+        required: false
+        type: string
+        default: ""
+      build_time:
+        description: "自定义构建日期/时间（留空=当前 UTC，如 2025-06-05 或 Sun Dec 01 08:10:00 UTC 2024）"
+        required: false
+        type: string
+        default: ""
       use_zram:
         required: false
         type: boolean
@@ -91,14 +106,60 @@ on:
         default: false
 
 jobs:
+  resolve:
+    name: 解析版本号
+    runs-on: ubuntu-24.04
+    outputs:
+      sub_level: ${{ steps.parse.outputs.sub_level }}
+      os_patch_level: ${{ steps.parse.outputs.os_patch_level }}
+    steps:
+      - name: 解析
+        id: parse
+        run: |
+          set -euo pipefail
+          FULL="${{ inputs.kernel_full_version }}"
+          SUB="${{ inputs.sub_level }}"
+          PATCH="${{ inputs.os_patch_level }}"
+
+          if [ -n "$FULL" ]; then
+            # 支持 6.1.138 / 6.1.138-android14-11-gxxxx 两种写法
+            CLEAN="${FULL%%-*}"
+            if ! echo "$CLEAN" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::版本号格式应为 X.Y.Z（如 6.1.138），收到 $FULL"
+              exit 1
+            fi
+            KM="$(echo "$CLEAN" | cut -d. -f1,2)"
+            SUB="$(echo "$CLEAN" | cut -d. -f3)"
+            if [ "$KM" != "${{ inputs.kernel_version }}" ]; then
+              echo "::error::版本号 $FULL 与所选内核 ${{ inputs.kernel_version }} 不一致"
+              exit 1
+            fi
+            # 从 data/androidXX/YY.json 查该子版本对应的构建日期
+            KMI="${{ inputs.android_version }}"
+            F="data/$KMI/${{ inputs.kernel_version }}.json"
+            if [ -f "$F" ]; then
+              if command -v jq >/dev/null 2>&1; then
+                FOUND=$(jq -r --arg k "$CLEAN" '.entries[] | select(.kernel==$k) | .date' "$F" 2>/dev/null | head -n1)
+              else
+                FOUND=$(grep -A1 "\"kernel\": \"$CLEAN\"" "$F" | grep -o '[0-9]\{4\}-[0-9]\{2\}' | head -n1)
+              fi
+              [ -n "$FOUND" ] && PATCH="$FOUND"
+            fi
+            echo "完整版本号 $FULL -> 子版本 $SUB / 日期 $PATCH"
+          fi
+
+          echo "sub_level=$SUB" >> "$GITHUB_OUTPUT"
+          echo "os_patch_level=$PATCH" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: resolve
     uses: ./.github/workflows/build.yml
     secrets: inherit
     with:
       android_version: ${{ inputs.android_version }}
       kernel_version: ${{ inputs.kernel_version }}
-      sub_level: ${{ inputs.sub_level }}
-      os_patch_level: ${{ inputs.os_patch_level }}
+      sub_level: ${{ needs.resolve.outputs.sub_level }}
+      os_patch_level: ${{ needs.resolve.outputs.os_patch_level }}
       ksu_variant: ${{ inputs.ksu_variant }}
       ksu_mode: ${{ inputs.ksu_mode }}
       use_kpm: ${{ inputs.use_kpm }}
@@ -114,5 +175,7 @@ jobs:
       droidspaces: "off"
       droidspaces_ntsync: false
       artifact_upload_mode: ${{ inputs.artifact_upload_mode }}
+      version: ${{ inputs.version }}
+      build_time: ${{ inputs.build_time }}
       kmi_tag: ${{ inputs.kmi_tag }}
       localversion_override: ${{ inputs.localversion_override }}
