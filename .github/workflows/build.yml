@@ -53,6 +53,20 @@ on:
         default: 关闭
 
       # ==================== 可选配置 ====================
+      kmi_tag:
+        # 覆盖 KMI 标签（如 android14-11 / android15-8）；留空则按内置映射表推断
+        required: false
+        type: string
+        default: ""
+
+      localversion_override:
+        # 直接指定内核版本串后缀，例如 -android14-11-g0c3d559bcd85-ab14529422
+        # 也接受完整串（6.1.138-android14-11-...），会自动剥掉内核版本前缀。
+        # 用于"必须与原厂 vermagic 逐字一致"的场景；留空则按原有逻辑生成。
+        required: false
+        type: string
+        default: ""
+
       version:
         required: false
         type: string
@@ -1686,8 +1700,37 @@ jobs:
             sed -i "/stable_scmversion_cmd/s/-maybe-dirty//g" ./build/kernel/kleaf/impl/stamp.bzl
           fi
 
+          # ===== 显式版本串覆盖（与原厂 vermagic 逐字对齐时使用） =====
+          LV_OVERRIDE=$(echo "${{ inputs.localversion_override }}" | tr -d '[:space:]')
+          if [ -n "$LV_OVERRIDE" ]; then
+            case "$LV_OVERRIDE" in
+              [0-9]*.[0-9]*.[0-9]*)
+                PREFIX="${{ inputs.kernel_version }}.${{ inputs.sub_level }}"
+                LV_OVERRIDE="${LV_OVERRIDE#$PREFIX}"
+                ;;
+            esac
+            case "$LV_OVERRIDE" in
+              -*) : ;;
+              *)  LV_OVERRIDE="-$LV_OVERRIDE" ;;
+            esac
+            echo "显式版本串: $LV_OVERRIDE"
+          fi
+
           VERSION_INPUT=$(echo "${{ inputs.version }}" | tr -d '[:space:]')
-          if [ -n "$VERSION_INPUT" ]; then
+
+          if [ -n "$LV_OVERRIDE" ]; then
+            if [ ! -f "build/build.sh" ]; then
+              cd ./common
+              sed -i "/^CONFIG_LOCALVERSION=/ s/=\"[^\"]*\"/=\"${LV_OVERRIDE}\"/" ./arch/arm64/configs/gki_defconfig 2>/dev/null || true
+              grep '^CONFIG_LOCALVERSION=' ./arch/arm64/configs/gki_defconfig || true
+              # setlocalversion 直接输出该串，不再追加 -g<hash>-ab<id>
+              perl -i -0777 -pe 's/(.*)echo "\$\{KERNELVERSION\}\$\{file_localversion\}\$\{config_localversion\}\$\{LOCALVERSION\}\$\{scm_version\}"/$1echo "\$\{KERNELVERSION\}'"${LV_OVERRIDE}"'"/s' ./scripts/setlocalversion 2>/dev/null || true
+              sed -i "\$s|echo \"\$res\"|echo \"${LV_OVERRIDE}\"|" ./scripts/setlocalversion 2>/dev/null || true
+              echo "已应用显式版本串覆盖（不再拼接 hash/构建号）"
+            else
+              echo "::warning::build/build.sh 布局下版本串由 kleaf 生成，显式覆盖可能不生效"
+            fi
+          elif [ -n "$VERSION_INPUT" ]; then
             CLEAN_VERSION=$(echo "$VERSION_INPUT" | sed -E 's/^[0-9]+\.[0-9]+\.[0-9]+//')
             perl -i -0777 -pe 's/(.*)echo "\$\{KERNELVERSION\}\$\{file_localversion\}\$\{config_localversion\}\$\{LOCALVERSION\}\$\{scm_version\}"/$1echo "\$\{KERNELVERSION\}'"${CLEAN_VERSION}"'"/s' ./common/scripts/setlocalversion 2>/dev/null || true
             sed -i "\$s|echo \"\$res\"|echo \"${CLEAN_VERSION}\"|" ./common/scripts/setlocalversion 2>/dev/null || true
@@ -1696,12 +1739,16 @@ jobs:
             cd ./common
             BID="ab$((RANDOM % 90000000 + 10000000))"
             GHASH=$(git rev-parse --verify HEAD | cut -c1-13)
-            case "${{ inputs.android_version }}-${{ inputs.kernel_version }}" in
-              "android14-6.1")  KMI_TAG="android14-11" ;;
-              "android15-6.6")  KMI_TAG="android15-8" ;;
-              "android16-6.12") KMI_TAG="android16-5" ;;
-              *) KMI_TAG="${{ inputs.android_version }}" ;;
-            esac
+            KMI_TAG="${{ inputs.kmi_tag }}"
+            if [ -z "$KMI_TAG" ]; then
+              case "${{ inputs.android_version }}-${{ inputs.kernel_version }}" in
+                "android14-6.1")  KMI_TAG="android14-11" ;;
+                "android15-6.6")  KMI_TAG="android15-8" ;;
+                "android16-6.12") KMI_TAG="android16-5" ;;
+                *) KMI_TAG="${{ inputs.android_version }}" ;;
+              esac
+            fi
+            echo "KMI 标签: $KMI_TAG"
 
             if [ "${{ inputs.kernel_version }}" = "6.1" ]; then
               KMI_LOCAL="-${KMI_TAG}-g${GHASH}-${BID}-4k"
@@ -1713,6 +1760,7 @@ jobs:
             fi
           fi
 
+      
       - name: 设置自定义构建时间
         shell: bash
         env:

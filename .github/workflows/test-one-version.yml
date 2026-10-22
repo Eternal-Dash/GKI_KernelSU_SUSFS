@@ -67,6 +67,16 @@ on:
           - "仅上传 AnyKernel3.zip"
           - "上传全部"
         default: "上传全部"
+      kmi_tag:
+        description: "覆盖 KMI 标签（如 android14-11），留空按内置映射"
+        required: false
+        type: string
+        default: ""
+      localversion_override:
+        description: "显式版本串（可粘贴完整 uname -r 结果），留空则自动生成"
+        required: false
+        type: string
+        default: ""
       use_zram:
         required: false
         type: boolean
@@ -104,3 +114,5 @@ jobs:
       droidspaces: "off"
       droidspaces_ntsync: false
       artifact_upload_mode: ${{ inputs.artifact_upload_mode }}
+      kmi_tag: ${{ inputs.kmi_tag }}
+      localversion_override: ${{ inputs.localversion_override }}
