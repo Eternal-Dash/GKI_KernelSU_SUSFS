@@ -90,10 +90,29 @@ if [[ "$ANDROID_VERSION" == "android13" && "$KERNEL_VERSION" == "5.15" ]]; then
     fi
     adjust_legacy_fdinfo_context
   fi
-  if [[ "$OS_PATCH_LEVEL" == "lts" ]]; then
-    echo "临时调整 Android 13 5.15 LTS 头文件上下文"
+  # 新版补丁需要 trace hook include 作上下文；旧版固定补丁可能不需要。
+  NS_BLK_515_ADJUST=""
+  if awk '/^diff --git a\/fs\/namespace.c /{f=1;next} /^diff --git /{f=0}
+    f && $0 == " #include <trace/hooks/blk.h>" {found=1} END{exit !found}' "$SUSFS_PATCH"; then
+    if ! grep -qxF '#include <trace/hooks/blk.h>' fs/namespace.c; then
+      sed -i '/^#include "internal.h"$/a #include <trace/hooks/blk.h>' fs/namespace.c
+      NS_BLK_515_ADJUST=added
+    fi
+  elif grep -qxF '#include <trace/hooks/blk.h>' fs/namespace.c; then
     sed -i '/^#include <trace\/hooks\/blk.h>$/d' fs/namespace.c
+    NS_BLK_515_ADJUST=removed
+  fi
+
+  TASK_MM_515_ADJUST=""
+  if awk '/^diff --git a\/fs\/proc\/task_mmu.c /{f=1;next} /^diff --git /{f=0}
+    f && $0 == " #include <trace/hooks/mm.h>" {found=1} END{exit !found}' "$SUSFS_PATCH"; then
+    if ! grep -qxF '#include <trace/hooks/mm.h>' fs/proc/task_mmu.c; then
+      sed -i '/^#include <linux\/pkeys.h>$/a #include <trace/hooks/mm.h>' fs/proc/task_mmu.c
+      TASK_MM_515_ADJUST=added
+    fi
+  elif grep -qxF '#include <trace/hooks/mm.h>' fs/proc/task_mmu.c; then
     sed -i '/^#include <trace\/hooks\/mm.h>$/d' fs/proc/task_mmu.c
+    TASK_MM_515_ADJUST=removed
   fi
 fi
 
@@ -106,9 +125,27 @@ if [[ "$ANDROID_VERSION" == "android14" && "$KERNEL_VERSION" == "6.1" ]]; then
     echo "临时调整 Android 14 6.1 dma-buf.h 上下文"
     sed -i '/^#include <linux\/cpufreq_times.h>$/a #include <linux/dma-buf.h>' fs/proc/base.c
   fi
-  if [[ "$CURRENT_SUB" -ge 157 ]]; then
-    echo "临时调整 Android 14 6.1 namespace.c 上下文"
+  # 6.1.157 起源码在 internal.h 后有 trace/hooks/blk.h；SUSFS 主补丁 2026-10-19 起
+  # （simonpunk 8a3d6fd 基于 6.1.176 重做）把它当作上下文，旧版补丁没有。
+  # 按补丁实际上下文与源码是否一致决定临时加或删，同时兼容新旧补丁和固定提交
+  NS_BLK_PATCH=""
+  if awk '
+    /^diff --git a\/fs\/namespace.c / { in_namespace = 1; next }
+    /^diff --git / { in_namespace = 0 }
+    in_namespace && $0 == " #include <trace/hooks/blk.h>" { found = 1 }
+    END { exit !found }
+  ' "$SUSFS_PATCH"; then
+    NS_BLK_PATCH=1
+  fi
+  NS_BLK_ADJUST=""
+  if [[ -n "$NS_BLK_PATCH" ]] && ! grep -qxF '#include <trace/hooks/blk.h>' fs/namespace.c; then
+    echo "临时调整 Android 14 6.1 namespace.c 上下文（补全 blk.h）"
+    sed -i '/^#include "internal.h"$/a #include <trace/hooks/blk.h>' fs/namespace.c
+    NS_BLK_ADJUST=added
+  elif [[ -z "$NS_BLK_PATCH" ]] && grep -qxF '#include <trace/hooks/blk.h>' fs/namespace.c; then
+    echo "临时调整 Android 14 6.1 namespace.c 上下文（移除 blk.h）"
     sed -i '/^#include <trace\/hooks\/blk.h>$/d' fs/namespace.c
+    NS_BLK_ADJUST=removed
   fi
 fi
 
@@ -124,9 +161,48 @@ if [[ "$ANDROID_VERSION" == "android15" && "$KERNEL_VERSION" == "6.6" ]]; then
 fi
 
 if [[ "$ANDROID_VERSION" == "android16" && "$KERNEL_VERSION" == "6.12" ]]; then
-  if [[ "$CURRENT_SUB" -ge 58 ]]; then
-    echo "临时调整 Android 16 6.12 exec.c 上下文"
+  # 按所选补丁临时补齐或移除 include，同时兼容新版和固定旧版补丁。
+  EXEC_DMA_ADJUST=""
+  if awk '/^diff --git a\/fs\/exec.c /{f=1;next} /^diff --git /{f=0}
+    f && $0 == " #include <linux/dma-buf.h>" {found=1} END{exit !found}' "$SUSFS_PATCH"; then
+    if ! grep -qxF '#include <linux/dma-buf.h>' fs/exec.c; then
+      sed -i '/^#include <linux\/ksm.h>$/a #include <linux/dma-buf.h>' fs/exec.c
+      EXEC_DMA_ADJUST=added
+    fi
+  elif grep -qxF '#include <linux/dma-buf.h>' fs/exec.c; then
     sed -i '/^#include <linux\/dma-buf.h>$/d' fs/exec.c
+    EXEC_DMA_ADJUST=removed
+  fi
+
+  # 只替换补丁的纯上下文，保留内核原有的 VMA 接口。
+  if grep -qF 'if (!vma_pages(vma))' fs/proc/task_mmu.c; then
+    sed -i 's/^ \tif (!vma_data_pages(vma))$/ \tif (!vma_pages(vma))/' "$SUSFS_PATCH"
+  fi
+
+  SUSFS_612_GUARD_OLD_ROLLUP=0
+  if grep -qF $' \t\t\tsmap_gather_stats(priv, vma, &mss);' "$SUSFS_PATCH" \
+    && awk '/^static int show_smaps_rollup\(/{f=1}
+      /^static const struct seq_operations proc_pid_smaps_op/{f=0}
+      f && /smap_gather_stats\(vma, &mss,/{old=1} END{exit !old}' fs/proc/task_mmu.c; then
+    ROLLUP_CALLS=$(awk '/^static int show_smaps_rollup\(/{f=1}
+      /^static const struct seq_operations proc_pid_smaps_op/{f=0}
+      f && /^\t+smap_gather_stats\(vma, &mss, (0|last_vma_end)\);$/{n++}
+      END{print n+0}' fs/proc/task_mmu.c)
+    if [[ "$ROLLUP_CALLS" != 3 ]]; then
+      echo "::error::旧版 rollup 统计调用已变化，停止适配"
+      exit 1
+    fi
+    # 两个新版 rollup hunk 改由版本修复阶段补齐等价统计守卫。
+    if ! awk '/^diff --git /{f=($0 ~ /^diff --git a\/fs\/proc\/task_mmu.c /);skip=0}
+      /^@@ /{skip=f && /static int show_smaps_rollup/;if(skip)n++}
+      !skip{print} END{exit(n!=2)}' "$SUSFS_PATCH" > "${SUSFS_PATCH}.tmp"; then
+      rm -f "${SUSFS_PATCH}.tmp"
+      echo "::error::新版 rollup hunk 已变化，停止适配"
+      exit 1
+    fi
+    chmod --reference="$SUSFS_PATCH" "${SUSFS_PATCH}.tmp"
+    mv "${SUSFS_PATCH}.tmp" "$SUSFS_PATCH"
+    SUSFS_612_GUARD_OLD_ROLLUP=1
   fi
 fi
 
@@ -234,6 +310,35 @@ if [[ -f fs/statfs.c ]] && grep -qF 'susfs_sus_kstat_spoof_vfs_statfs(' fs/statf
   fi
 fi
 
+# 上游 2026-11-01 起 priority_uid_filter 的两个凭据辅助函数定义在 #ifdef 之外，
+# 调用点却全在 CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER 内；SukiSU/BakaSU 的 Kconfig 尚无该选项，
+# 函数成为死代码，开启 CONFIG_WERROR 的内核（android12-5.10-2023-01 起）报 unused function
+if grep -qE '^static (struct cred \*|void )susfs_(switch_to_ksu_domain|restore_creds)\(' fs/susfs.c; then
+  echo "为 priority_uid_filter 凭据辅助函数标记 __maybe_unused"
+  sed -i -E 's/^static (struct cred \*|void )(susfs_switch_to_ksu_domain|susfs_restore_creds)\(/static __maybe_unused \1\2(/' fs/susfs.c
+fi
+
+# 上游 2026-11-02 起 priority_uid_filter 的声明与定义都受 CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER 保护，
+# 该选项由 10_enable_susfs_for_ksu.patch 加进 KSU 的 Kconfig；SukiSU builtin 不打该补丁，
+# Kconfig 尚未同步，却无条件调用这些接口，编译时报隐式声明。按上游定义补上选项
+KSU_KCONFIG="$KERNEL_ROOT/KernelSU/kernel/Kconfig"
+if [[ -f "$KSU_KCONFIG" ]] \
+  && grep -qF 'CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER' include/linux/susfs.h \
+  && ! grep -qE '^config KSU_SUSFS_PRIORITY_UID_FILTER$' "$KSU_KCONFIG" \
+  && grep -RqsE --include='*.c' 'susfs_(parse_priority_app_strings|set_priority_uid_filter)\(' "$KERNEL_ROOT/KernelSU/kernel"; then
+  echo "$KSU_VARIANT 的 Kconfig 缺少 KSU_SUSFS_PRIORITY_UID_FILTER，按上游定义补上"
+  cat >> "$KSU_KCONFIG" << 'EOF'
+
+config KSU_SUSFS_PRIORITY_UID_FILTER
+	bool "Enable to allow adding user-defined uids that will be hidden from getpriority/setpriority/ioprio_get/ioprio_set syscall"
+	depends on KSU_SUSFS
+	default y
+	help
+	  - Allow hiding user-defined uids from syscalls like getpriority/setpriority/ioprio_get/ioprio_set.
+	  - Effective on all processes with uid >= 10000.
+EOF
+fi
+
 # 在编译前报告 SUSFS 主补丁产生的冲突文件，上游自带的 .rej 不计入
 mapfile -t SUSFS_REJ_FILES < <(list_untracked_rej)
 SUSFS_REJ_COUNT=${#SUSFS_REJ_FILES[@]}
@@ -263,14 +368,15 @@ if [[ "$ANDROID_VERSION" == "android13" && "$KERNEL_VERSION" == "5.15" ]]; then
     sed -i 's|i_uid_into_mnt(i_user_ns(&fi->inode), &fi->inode).val|i_uid_into_mnt(\&init_user_ns, \&fi->inode).val|g' fs/susfs.c
     sed -i 's|i_uid_into_mnt(i_user_ns(inode), inode).val|i_uid_into_mnt(\&init_user_ns, inode).val|g' fs/susfs.c
   fi
-  if [[ "$OS_PATCH_LEVEL" == "lts" ]]; then
-    echo "还原 Android 13 5.15 LTS 头文件上下文"
-    if ! grep -qF '#include <trace/hooks/blk.h>' fs/namespace.c; then
-      sed -i '/^#include "internal.h"$/a #include <trace/hooks/blk.h>' fs/namespace.c
-    fi
-    if ! grep -qF '#include <trace/hooks/mm.h>' fs/proc/task_mmu.c; then
-      sed -i '/^#include <linux\/pkeys.h>$/a #include <trace/hooks/mm.h>' fs/proc/task_mmu.c
-    fi
+  if [[ "$NS_BLK_515_ADJUST" == "added" ]]; then
+    sed -i '/^#include <trace\/hooks\/blk.h>$/d' fs/namespace.c
+  elif [[ "$NS_BLK_515_ADJUST" == "removed" ]] && ! grep -qxF '#include <trace/hooks/blk.h>' fs/namespace.c; then
+    sed -i '/^#include "internal.h"$/a #include <trace/hooks/blk.h>' fs/namespace.c
+  fi
+  if [[ "$TASK_MM_515_ADJUST" == "added" ]]; then
+    sed -i '/^#include <trace\/hooks\/mm.h>$/d' fs/proc/task_mmu.c
+  elif [[ "$TASK_MM_515_ADJUST" == "removed" ]] && ! grep -qxF '#include <trace/hooks/mm.h>' fs/proc/task_mmu.c; then
+    sed -i '/^#include <linux\/pkeys.h>$/a #include <trace/hooks/mm.h>' fs/proc/task_mmu.c
   fi
 fi
 
@@ -282,8 +388,11 @@ if [[ "$ANDROID_VERSION" == "android14" && "$KERNEL_VERSION" == "6.1" ]]; then
     echo "还原 Android 14 6.1 base.c 临时调整"
     sed -i '/^#include <linux\/dma-buf.h>$/d' fs/proc/base.c
   fi
-  if [[ "$CURRENT_SUB" -ge 157 ]] && ! grep -qF '#include <trace/hooks/blk.h>' fs/namespace.c; then
-    echo "还原 Android 14 6.1 namespace.c 临时调整"
+  if [[ "$NS_BLK_ADJUST" == "added" ]]; then
+    echo "还原 Android 14 6.1 namespace.c 临时调整（移除补全的 blk.h）"
+    sed -i '/^#include <trace\/hooks\/blk.h>$/d' fs/namespace.c
+  elif [[ "$NS_BLK_ADJUST" == "removed" ]] && ! grep -qxF '#include <trace/hooks/blk.h>' fs/namespace.c; then
+    echo "还原 Android 14 6.1 namespace.c 临时调整（恢复 blk.h）"
     sed -i '/^#include "internal.h"$/a #include <trace/hooks/blk.h>' fs/namespace.c
   fi
 fi
@@ -300,9 +409,10 @@ if [[ "$ANDROID_VERSION" == "android15" && "$KERNEL_VERSION" == "6.6" ]]; then
 fi
 
 if [[ "$ANDROID_VERSION" == "android16" && "$KERNEL_VERSION" == "6.12" ]]; then
-  if [[ "$CURRENT_SUB" -ge 58 ]] && ! grep -qF '#include <linux/dma-buf.h>' fs/exec.c; then
-    echo "还原 Android 16 6.12 exec.c 临时调整"
-    sed -i '0,/^#include /s//#include <linux\/dma-buf.h>\n&/' fs/exec.c
+  if [[ "$EXEC_DMA_ADJUST" == "added" ]]; then
+    sed -i '/^#include <linux\/dma-buf.h>$/d' fs/exec.c
+  elif [[ "$EXEC_DMA_ADJUST" == "removed" ]] && ! grep -qxF '#include <linux/dma-buf.h>' fs/exec.c; then
+    sed -i '/^#include <linux\/ksm.h>$/a #include <linux/dma-buf.h>' fs/exec.c
   fi
 fi
 
@@ -370,6 +480,33 @@ fi
 
 # Android 16 - 6.12 修复
 if [[ "$ANDROID_VERSION" == "android16" && "$KERNEL_VERSION" == "6.12" ]]; then
+  # 仅过滤隐藏映射的统计调用，不改原有迭代、锁操作和范围更新。
+  if [[ "$SUSFS_612_GUARD_OLD_ROLLUP" == "1" ]]; then
+    ROLLUP_MARKERS=$(grep -cF '/* SUSFS 6.12 旧版 rollup 统计兼容守卫。 */' fs/proc/task_mmu.c || true)
+    if [[ "$ROLLUP_MARKERS" == 0 ]]; then
+      if ! awk '/^static int show_smaps_rollup\(/{f=1}
+        /^static const struct seq_operations proc_pid_smaps_op/{f=0}
+        f && /^\t+smap_gather_stats\(vma, &mss, (0|last_vma_end)\);$/ {
+          match($0,/^\t+/);indent=substr($0,1,RLENGTH)
+          print indent "/* SUSFS 6.12 旧版 rollup 统计兼容守卫。 */"
+          print "#ifdef CONFIG_KSU_SUSFS_SUS_MAP"
+          print indent "if (!vma->vm_file || !(SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file))))"
+          print "#endif"
+          print "\t" $0;n++;next
+        }
+        {print} END{exit(n!=3)}' fs/proc/task_mmu.c > fs/proc/task_mmu.c.tmp; then
+        rm -f fs/proc/task_mmu.c.tmp
+        echo "::error::无法补齐旧版 rollup 统计守卫"
+        exit 1
+      fi
+      chmod --reference=fs/proc/task_mmu.c fs/proc/task_mmu.c.tmp
+      mv fs/proc/task_mmu.c.tmp fs/proc/task_mmu.c
+    elif [[ "$ROLLUP_MARKERS" != 3 ]]; then
+      echo "::error::旧版 rollup 统计守卫不完整"
+      exit 1
+    fi
+  fi
+
   # 固定旧版 SukiSU 在 6.12 上会重复定义 setresuid hook
   SETUID_HOOK="$KERNEL_ROOT/common/drivers/kernelsu/setuid_hook.c"
   if [[ -n "$LEGACY_SUKISU_CONFIG" && -f "$SETUID_HOOK" ]] \
