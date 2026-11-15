@@ -176,6 +176,21 @@ jobs:
           echo "Stock Config  : 自动检测 config/stock_defconfig"
           echo "========================================"
 
+      # Linux 6.12 把 LSM 注册改成 static call：security_add_hooks() 需要
+      # const struct lsm_id *，且 hook 结构、inode_permission 等回调签名同时变化。
+      # SukiSU / BakaSU / KernelSU-Next 目前（含 builtin 最新提交）仍是旧接口：
+      #   security_add_hooks(ksu_hooks, ARRAY_SIZE(ksu_hooks), "ksu");
+      # 直接编译必然报 incompatible pointer types / static call 初始化失败。
+      # 与其跑 20 分钟再炸在 C 编译错误上，不如这里直接拦下并说清原因。
+      - name: 校验内核版本与 KSU 变体兼容性
+        run: |
+          if [ "${{ inputs.kernel_version }}" = "6.12" ] && [ "${{ inputs.ksu_mode }}" != "禁用KSU" ]; then
+            echo "::error::KernelSU 变体（${{ inputs.ksu_variant }}）尚未适配 Linux 6.12 的 LSM static call 接口"
+            echo "::error::6.12 目前只能以 ksu_mode=禁用KSU 构建纯净 GKI；要 KSU + SUSFS 请选 5.10 / 5.15 / 6.1 / 6.6"
+            exit 1
+          fi
+          echo "版本兼容性检查通过"
+
       - name: 清理磁盘空间
         run: |
           # 先并行 mv 到临时目录（瞬时完成），再在后台低优先级删除，不阻塞后续步骤
