@@ -1365,15 +1365,20 @@ jobs:
           cp -r $SUKISU_PATCHES/other/zram/lz4k/crypto/* ./crypto/
           cp -r $SUKISU_PATCHES/other/zram/lz4k_oplus ./lib/
 
-          cp $SUKISU_PATCHES/other/zram/zram_patch/${{ inputs.kernel_version }}/lz4kd.patch ./
-          if ! patch -p1 -F 3 < lz4kd.patch; then
-            echo "::warning::lz4kd.patch 应用失败，可能已应用或上下文不匹配"
-          fi
-
-          cp $SUKISU_PATCHES/other/zram/zram_patch/${{ inputs.kernel_version }}/lz4k_oplus.patch ./
-          if ! patch -p1 -F 3 < lz4k_oplus.patch; then
-            echo "::warning::lz4k_oplus.patch 应用失败，可能已应用或上下文不匹配"
-          fi
+          # SukiSU_patch 的 zram_patch 只覆盖 5.10 / 5.15 / 6.1 / 6.6，没有 6.12。
+          # 直接 cp 会在 set -e 下让整步失败（6.12 + use_zram 必挂），故按文件是否存在决定：
+          # 缺失时告警并跳过，内核仍可正常构建（只是没有 lz4kd/lz4k_oplus 压缩算法）。
+          ZRAM_PATCH_DIR="$SUKISU_PATCHES/other/zram/zram_patch/${{ inputs.kernel_version }}"
+          for pname in lz4kd lz4k_oplus; do
+            if [ ! -f "$ZRAM_PATCH_DIR/$pname.patch" ]; then
+              echo "::warning::${{ inputs.kernel_version }} 上游未提供 $pname.patch（$ZRAM_PATCH_DIR 不存在该文件），跳过该补丁"
+              continue
+            fi
+            cp "$ZRAM_PATCH_DIR/$pname.patch" ./
+            if ! patch -p1 -F 3 < "$pname.patch"; then
+              echo "::warning::$pname.patch 应用失败，可能已应用或上下文不匹配"
+            fi
+          done
 
       - name: 修复 6.6 WiFi/蓝牙兼容性（三星 + 小米）
         if: inputs.kernel_version == '6.6'
@@ -1692,8 +1697,20 @@ jobs:
           CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
           CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
           CONFIG_KSU_SUSFS_SUS_MAP=y
-          CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y
           EOF
+
+          # KSU_SUSFS_PRIORITY_UID_FILTER 是 SUSFS 2026-11-01 之后才引入的选项。
+          # 本 fork 在 config/config 里钉住了 2026-10 的 SUSFS 提交，源码里没有该符号；
+          # 而 kleaf 对 fragment 中未在 Kconfig 声明的项直接报错退出：
+          #   CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER: actual '', expected ... Are they declared in Kconfig?
+          # 故改为「源码是否真的声明了该选项」来决定写不写，兼容钉住的旧提交与上游最新提交。
+          if grep -RqsE '^[[:space:]]*config[[:space:]]+KSU_SUSFS_PRIORITY_UID_FILTER([[:space:]]|$)' \
+               "$KERNEL_ROOT/KernelSU" "$KERNEL_ROOT/common" 2>/dev/null; then
+            echo "CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y" >> "$DEFCONFIG"
+            echo "已启用 CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER"
+          else
+            echo "::warning::当前 SUSFS/KernelSU 源码未声明 KSU_SUSFS_PRIORITY_UID_FILTER，跳过该项（本 fork 钉住的 SUSFS 提交无此特性）"
+          fi
 
           # 把本步实际追加的行导出为配置片段，随 SUSFS 集成补丁一起分发
           if [ "$SUSFS_PATCH_EXPORT" = "true" ] && [ -d "$GITHUB_WORKSPACE/susfs-patch" ]; then
