@@ -88,7 +88,8 @@ KPM 的完整链路是：`CONFIG_KPM=y` → `patch_linux` 对 `Image` 注入 Ker
 | 6.6.X lts + KPM | ✅ 宿主注入成功 | `patch_linux` 直接可用，`Image.lz4` 重建后解压校验一致 |
 | 5.10.X lts + KPM | ✅ 宿主注入成功 | 同上 |
 | 6.1.X lts + KPM | ❌ 注入失败 | `patch_linux` 与 `kptools 0.13.9` 均报 `analyze_kallsym_info error` / `can't find arm64 relocation table`，属 KernelPatch 对 6.1.182 kallsyms 的解析限制；关掉 KPM 即可正常构建 |
-| 6.12.X lts | ❌ 不适用 | SukiSU / BakaSU / Next 均未适配 6.12 的 LSM static call（`security_add_hooks` 需要 `const struct lsm_id *`），现在第一个步骤直接拦截；6.12 只能用 `ksu_mode=禁用KSU` |
+| 6.12.X lts + 禁用KSU | ✅ 构建成功 | 6.12.97 纯净 GKI（ZRAM / BBG / 网络增强照常生效） |
+| 6.12.X lts + KSU | ❌ 不适用 | SukiSU / BakaSU / Next（含 builtin 最新提交）均未适配 6.12 的 LSM static call（`security_add_hooks` 需要 `const struct lsm_id *`），现在第一个步骤直接拦截 |
 
 同步上游时另外踩到两处上游漂移，本 fork 已加兼容（避免「上游更新即构建失败」）：
 
