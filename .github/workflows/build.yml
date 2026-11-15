@@ -2000,18 +2000,65 @@ jobs:
           echo "KPM 目标目录: $TARGET_PATH"
 
           cd "$TARGET_PATH"
-          rm -rf ./patch
-          cp -f "$PATCH_BIN" ./patch
-          chmod 777 ./patch
-          ./patch
 
-          if [ ! -f oImage ]; then
-            echo "::error::patch_linux 未产出 oImage，KernelPatch 宿主注入失败"
+          # 每次尝试都从原始 Image 开始，避免上一个工具改坏了镜像
+          cp -f Image Image.orig
+          rm -f oImage
+          INJECT_OK=false
+          INJECT_VIA=""
+
+          # 方案 1：SukiSU_patch 自带的 patch_linux（legacy 包装，可能落后于新内核）
+          if [ -f "$PATCH_BIN" ]; then
+            rm -rf ./patch
+            cp -f "$PATCH_BIN" ./patch
+            chmod 777 ./patch
+            if ./patch; then
+              [ -f oImage ] && { INJECT_OK=true; INJECT_VIA="patch_linux"; }
+            else
+              echo "::warning::patch_linux 执行失败，改用 kptools"
+            fi
+          fi
+
+          # 方案 2/3：kptools + kpimg（KernelPatch 官方工具链，对更新的 kallsyms 支持更好）
+          try_kptools() {
+            local tools_bin="$1" img="$2"
+            [ -f "$tools_bin" ] || return 1
+            chmod +x "$tools_bin" 2>/dev/null || true
+            cp -f Image.orig Image
+            rm -f oImage
+            if "$tools_bin" -p -i Image -s "$img" -o oImage >/dev/null 2>&1 && [ -f oImage ]; then
+              INJECT_OK=true
+              INJECT_VIA="$(basename "$tools_bin")"
+              return 0
+            fi
+            return 1
+          }
+
+          if [ "$INJECT_OK" != true ] && [ -f "${SUKISU_PATCHES}/kpm/kptools-linux" ] && [ -f "${SUKISU_PATCHES}/kpm/kpimg" ]; then
+            echo "改用 SukiSU_patch 内的 kptools-linux 注入"
+            try_kptools "${SUKISU_PATCHES}/kpm/kptools-linux" "${SUKISU_PATCHES}/kpm/kpimg" || true
+          fi
+
+          if [ "$INJECT_OK" != true ] && [ -f "${SUKISU_PATCHES}/kpm/kpimg" ]; then
+            KP_VER="0.13.9"
+            KP_DIR="$(mktemp -d)"
+            if curl -fsSL -o "$KP_DIR/kptools-linux" \
+                 "https://github.com/bmax121/KernelPatch/releases/download/${KP_VER}/kptools-linux"; then
+              echo "用 KernelPatch ${KP_VER} 的 kptools-linux 再试一次"
+              try_kptools "$KP_DIR/kptools-linux" "${SUKISU_PATCHES}/kpm/kpimg" || true
+            fi
+            rm -rf "$KP_DIR"
+          fi
+
+          if [ "$INJECT_OK" != true ]; then
+            echo "::error::KernelPatch 宿主注入失败（patch_linux 与 kptools 均未产出 oImage）"
+            echo "::error::该内核版本的 kallsyms 结构可能还不被 KernelPatch 支持，请对该版本关闭 KPM 后重试"
             exit 1
           fi
+          echo "OK: Image 已注入 KernelPatch 宿主（via ${INJECT_VIA}）"
           rm -f Image
           mv oImage Image
-          echo "OK: Image 已注入 KernelPatch 宿主"
+          rm -f Image.orig
 
           # 用打过补丁的 Image 重建 Image.lz4，保证 lz4 镜像与 boot.img 内核一致
           if ! command -v lz4 >/dev/null 2>&1; then
