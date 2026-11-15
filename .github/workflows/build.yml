@@ -1461,22 +1461,15 @@ jobs:
 
           if grep -q "CONFIG_ZSMALLOC=y" "$CONFIG_FILE" && grep -q "CONFIG_ZRAM=y" "$CONFIG_FILE"; then
             # LZ4K / LZ4KD / LZ4K_OPLUS 这些符号来自 SukiSU_patch 的 lz4k 源码与 lz4kd 补丁。
-            # 上游没提供对应内核版本的补丁时（例如 6.12），符号不会被 Kconfig 声明，
-            # 直接写进 fragment 会被 kleaf 以 “actual '', expected 'y'” 中断构建。
-            # 故逐行判断：只有该 CONFIG 真的在 Kconfig 里存在才追加。
-            while IFS= read -r zline; do
-              case "$zline" in
-                CONFIG_*=y|CONFIG_*=m)
-                  zsym="${zline%%=*}"
-                  if grep -RqsE "^[[:space:]]*config[[:space:]]+${zsym#CONFIG_}([[:space:]]|$)" "$KERNEL_ROOT/common" 2>/dev/null; then
-                    echo "$zline" >> "$CONFIG_FILE"
-                  else
-                    echo "::warning::$zsym 未在 Kconfig 中声明，跳过（该内核版本缺对应 lz4k/lz4kd 补丁）"
-                  fi
-                  ;;
-                *) echo "$zline" >> "$CONFIG_FILE" ;;
-              esac
-            done < "$ZZH_PATCHES/config/zram.config"
+            # 上游 SukiSU_patch 的 zram_patch 只覆盖 5.10 / 5.15 / 6.1 / 6.6；6.12 没有对应补丁，
+            # 符号不会被任何被 Kconfig 树引用的 Kconfig 声明，写进 fragment 会被 kleaf 以
+            # “actual '', expected 'y'” 中断（lib/lz4k_oplus 里带 Kconfig 会被误判，故只按补丁判定）。
+            ZRAM_PATCH_DIR="$SUKISU_PATCHES/other/zram/zram_patch/${{ inputs.kernel_version }}"
+            if [ -f "$ZRAM_PATCH_DIR/lz4kd.patch" ]; then
+              cat "$ZZH_PATCHES/config/zram.config" >> "$CONFIG_FILE"
+            else
+              echo "::warning::上游未提供 ${{ inputs.kernel_version }} 的 lz4kd 补丁，跳过 LZ4K/LZ4KD/LZ4K_OPLUS 配置（内核仍可正常构建，仅少这几个压缩算法）"
+            fi
           fi
 
       - name: 添加 BBG 防格机补丁
