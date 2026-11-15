@@ -1470,7 +1470,9 @@ jobs:
             sed -i 's/CONFIG_ZRAM=m/CONFIG_ZRAM=y/g' "$CONFIG_FILE"
           fi
 
-          if [ "${{ inputs.android_version }}" = "android14" ] || [ "${{ inputs.android_version }}" = "android15" ]; then
+          # ZRAM/ZSMALLOC 被改成内置（=y）后，modules.bzl 里仍列着 .ko，kleaf dist 会因
+          # 「Unable to find mm/zsmalloc.ko」打包失败。android16/6.12 也会命中，故按文件是否存在统一处理。
+          if [ -f "$KERNEL_ROOT/common/modules.bzl" ]; then
             sed -i 's/"drivers\/block\/zram\/zram\.ko",//g; s/"mm\/zsmalloc\.ko",//g' "$KERNEL_ROOT/common/modules.bzl"
           fi
 
