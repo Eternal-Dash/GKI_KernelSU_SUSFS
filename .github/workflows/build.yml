@@ -1460,7 +1460,23 @@ jobs:
           fi
 
           if grep -q "CONFIG_ZSMALLOC=y" "$CONFIG_FILE" && grep -q "CONFIG_ZRAM=y" "$CONFIG_FILE"; then
-            cat "$ZZH_PATCHES/config/zram.config" >> "$CONFIG_FILE"
+            # LZ4K / LZ4KD / LZ4K_OPLUS 这些符号来自 SukiSU_patch 的 lz4k 源码与 lz4kd 补丁。
+            # 上游没提供对应内核版本的补丁时（例如 6.12），符号不会被 Kconfig 声明，
+            # 直接写进 fragment 会被 kleaf 以 “actual '', expected 'y'” 中断构建。
+            # 故逐行判断：只有该 CONFIG 真的在 Kconfig 里存在才追加。
+            while IFS= read -r zline; do
+              case "$zline" in
+                CONFIG_*=y|CONFIG_*=m)
+                  zsym="${zline%%=*}"
+                  if grep -RqsE "^[[:space:]]*config[[:space:]]+${zsym#CONFIG_}([[:space:]]|$)" "$KERNEL_ROOT/common" 2>/dev/null; then
+                    echo "$zline" >> "$CONFIG_FILE"
+                  else
+                    echo "::warning::$zsym 未在 Kconfig 中声明，跳过（该内核版本缺对应 lz4k/lz4kd 补丁）"
+                  fi
+                  ;;
+                *) echo "$zline" >> "$CONFIG_FILE" ;;
+              esac
+            done < "$ZZH_PATCHES/config/zram.config"
           fi
 
       - name: 添加 BBG 防格机补丁
