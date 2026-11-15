@@ -17,7 +17,7 @@
 |:---|:---|
 | **是什么** | 一个 GitHub Actions 自动构建 GKI 内核的工作流仓库，Fork 自 `zzh20188/GKI_KernelSU_SUSFS`，最上游为 `WildKernels/GKI_KernelSU_SUSFS` |
 | **不是什么** | 不是内核源码仓库；不含任何自行开发的内核特性；不主张上游代码的著作权 |
-| **改了什么** | 只有 `.github/workflows/build.yml`、`.github/workflows/main.yml`、`config/config` 三个文件（外加本说明与 `CREDITS.md`） |
+| **改了什么** | `.github/workflows/build.yml`、`.github/workflows/main.yml`、`.github/workflows/test-one-version.yml`、`config/config`（外加本说明与 `CREDITS.md`） |
 | **谁改的** | Fork 维护者：**Eternal-Dash**（2026-10）。改动范围与时序见 [CREDITS.md](CREDITS.md) 与各文件头部注释 |
 
 Fork 关系：
@@ -75,6 +75,25 @@ KPM 的完整链路是：`CONFIG_KPM=y` → `patch_linux` 对 `Image` 注入 Ker
 - **其他变体不被误伤**：Official / Next / BakaSU / 老版本 SukiSU 走各自原有路径；KPM 开关在不支持的变体上会被明确忽略并给出 warning。
 - **上游更新时不会炸**：所有修补都是「有则改、无则跳过、改完自检」，上游修复后本仓库不需要追着改。
 - **可审计**：每处修补都在工作流里留了「改前 / 改后」日志，构建记录里能直接看出有没有生效。
+
+---
+
+## 3.5 版本兼容性与实测结果（2026-11-15）
+
+与上游 `zzh20188/dev`（`95a5710`）同步后，用「单版本验证」工作流逐个实测（SukiSU + SUSFS + ZRAM + BBG + 网络增强）：
+
+| 目标 | 结果 | 说明 |
+|:---|:---|:---|
+| 5.10.X / 5.15.X / 6.1.X / 6.6.X lts | ✅ 构建成功 | 最新 LTS：5.10.272 / 5.15.223 / 6.1.182 / 6.6.144 |
+| 6.6.X lts + KPM | ✅ 宿主注入成功 | `patch_linux` 直接可用，`Image.lz4` 重建后解压校验一致 |
+| 5.10.X lts + KPM | ✅ 宿主注入成功 | 同上 |
+| 6.1.X lts + KPM | ❌ 注入失败 | `patch_linux` 与 `kptools 0.13.9` 均报 `analyze_kallsym_info error` / `can't find arm64 relocation table`，属 KernelPatch 对 6.1.182 kallsyms 的解析限制；关掉 KPM 即可正常构建 |
+| 6.12.X lts | ❌ 不适用 | SukiSU / BakaSU / Next 均未适配 6.12 的 LSM static call（`security_add_hooks` 需要 `const struct lsm_id *`），现在第一个步骤直接拦截；6.12 只能用 `ksu_mode=禁用KSU` |
+
+同步上游时另外踩到两处上游漂移，本 fork 已加兼容（避免「上游更新即构建失败」）：
+
+1. **zram 补丁缺失**：`SukiSU_patch` 的 `zram_patch` 只有 5.10 / 5.15 / 6.1 / 6.6，6.12 会在 `cp` 处直接失败；现改为按补丁是否存在决定，缺失时告警跳过 LZ4K 系列配置。
+2. **`CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER`**：上游 2026-11 起把它写死进 SUSFS 配置片段，而本 fork 钉住的 SUSFS 提交没有该 Kconfig，kleaf 会以 `actual '', expected 'y'` 中断；现按源码是否真的声明该选项决定写不写。
 
 ---
 
