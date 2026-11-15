@@ -11,6 +11,16 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
+      # ==================== 配置档（先选这个） ====================
+      profile:
+        description: "配置档：推荐=一键开齐（ZRAM + BBG + 网络增强），KPM 与实验性驱动保持关闭；自定义=下面每个开关都由你决定"
+        required: true
+        type: choice
+        options:
+          - 推荐
+          - 自定义
+        default: 推荐
+
       android_version:
         description: "Android 版本"
         required: true
@@ -167,12 +177,12 @@ jobs:
       os_patch_level: ${{ needs.resolve.outputs.os_patch_level }}
       ksu_variant: ${{ inputs.ksu_variant }}
       ksu_mode: ${{ inputs.ksu_mode }}
-      use_kpm: ${{ inputs.use_kpm }}
-      use_zram: ${{ inputs.use_zram }}
-      use_bbg: ${{ inputs.use_bbg }}
+      use_kpm: ${{ inputs.profile == '自定义' && inputs.use_kpm || 'disabled (关闭)' }}
+      use_zram: ${{ inputs.profile == '自定义' && inputs.use_zram || inputs.profile != '自定义' }}
+      use_bbg: ${{ inputs.profile == '自定义' && inputs.use_bbg || inputs.profile != '自定义' }}
       use_rekernel: false
       use_nomount: false
-      use_networking: ${{ inputs.use_networking }}
+      use_networking: ${{ inputs.profile == '自定义' && inputs.use_networking || inputs.profile != '自定义' }}
       cve_2026_43499_patch: false
       export_susfs_patches: ${{ inputs.export_susfs_patches }}
       supp_op: false

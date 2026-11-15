@@ -7,6 +7,16 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
+      # ==================== 配置档（先选这个） ====================
+      profile:
+        description: "配置档：推荐=一键开齐（ZRAM + BBG + 网络增强），KPM 与实验性驱动保持关闭；自定义=下面每个开关都由你决定"
+        required: true
+        type: choice
+        options:
+          - 推荐
+          - 自定义
+        default: 推荐
+
       # ==================== 下拉选项 ====================
       kernelsu_variant:
         description: "KernelSU 变体"
@@ -106,6 +116,12 @@ on:
         default: false
   workflow_call:
     inputs:
+      profile:
+        description: "配置档（由 main.yml 透传；main 已解析过，这里保持 自定义 即原样透传）"
+        required: false
+        type: string
+        default: 自定义
+
       kernelsu_variant:
         required: true
         type: string
@@ -231,19 +247,19 @@ jobs:
       ksu_variant: ${{ inputs.kernelsu_variant }}
       version: ${{ inputs.version || '' }}
       build_time: ${{ inputs.build_time || '' }}
-      use_zram: ${{ inputs.use_zram }}
-      use_bbg: ${{ inputs.use_bbg }}
-      use_kpm: ${{ inputs.use_kpm }}
-      use_rekernel: ${{ inputs.use_rekernel || false }}
-      use_nomount: ${{ inputs.use_nomount || false }}
-      use_networking: ${{ inputs.use_networking || false }}
-      cve_2026_43499_patch: ${{ inputs.cve_2026_43499_patch }}
+      use_zram: ${{ inputs.profile == '自定义' && inputs.use_zram || inputs.profile != '自定义' }}
+      use_bbg: ${{ inputs.profile == '自定义' && inputs.use_bbg || inputs.profile != '自定义' }}
+      use_kpm: ${{ inputs.profile == '自定义' && inputs.use_kpm || 'disabled (关闭)' }}
+      use_rekernel: ${{ inputs.profile == '自定义' && inputs.use_rekernel }}
+      use_nomount: ${{ inputs.profile == '自定义' && inputs.use_nomount }}
+      use_networking: ${{ inputs.profile == '自定义' && inputs.use_networking || inputs.profile != '自定义' }}
+      cve_2026_43499_patch: ${{ inputs.profile == '自定义' && inputs.cve_2026_43499_patch }}
       export_susfs_patches: ${{ inputs.export_susfs_patches || false }}
       supp_op: false
       enable_susfs: ${{ inputs.ksu_mode != '禁用SUSFS' && inputs.ksu_mode != '禁用KSU' }}
       ksu_mode: ${{ inputs.ksu_mode || '关闭' }}
-      droidspaces: ${{ inputs.droidspaces || 'off' }}
-      droidspaces_ntsync: ${{ inputs.droidspaces_ntsync || false }}
+      droidspaces: ${{ inputs.profile == '自定义' && inputs.droidspaces || 'off' }}
+      droidspaces_ntsync: ${{ inputs.profile == '自定义' && inputs.droidspaces_ntsync }}
       artifact_upload_mode: ${{ inputs.artifact_upload_mode }}
 
   # 仅在直接触发时运行，从 main.yml 调用时跳过

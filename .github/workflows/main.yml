@@ -22,6 +22,16 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
+      # ==================== 配置档（先选这个） ====================
+      profile:
+        description: "配置档：推荐=一键开齐（ZRAM + BBG + 网络增强），KPM 与实验性驱动保持关闭；自定义=下面每个开关都由你决定"
+        required: true
+        type: choice
+        options:
+          - 推荐
+          - 自定义
+        default: 推荐
+
       # ==================== 下拉选项 ====================
       release_type:
         description: "发布类型"
@@ -90,7 +100,7 @@ on:
         type: boolean
         default: true
 
-      # ==================== 开关（默认关闭） ====================
+      # ==================== 开关（默认关闭；配置档=推荐 时自动开启 ZRAM/BBG/网络增强，其余保持关闭） ====================
       build_a12_5_10:
         description: "Android 12 - 5.10"
         type: boolean
@@ -154,6 +164,7 @@ jobs:
     secrets: inherit
     with:
       kernelsu_variant: ${{ inputs.kernelsu_variant }}
+      profile: ${{ inputs.profile }}
       version: ${{ inputs.version }}
       build_time: ${{ inputs.build_time || '' }}
       use_zram: ${{ inputs.use_zram }}
@@ -176,6 +187,7 @@ jobs:
     secrets: inherit
     with:
       kernelsu_variant: ${{ inputs.kernelsu_variant }}
+      profile: ${{ inputs.profile }}
       version: ${{ inputs.version }}
       build_time: ${{ inputs.build_time || '' }}
       use_zram: ${{ inputs.use_zram }}
@@ -198,6 +210,7 @@ jobs:
     secrets: inherit
     with:
       kernelsu_variant: ${{ inputs.kernelsu_variant }}
+      profile: ${{ inputs.profile }}
       version: ${{ inputs.version }}
       build_time: ${{ inputs.build_time || '' }}
       use_zram: ${{ inputs.use_zram }}
@@ -220,6 +233,7 @@ jobs:
     secrets: inherit
     with:
       kernelsu_variant: ${{ inputs.kernelsu_variant }}
+      profile: ${{ inputs.profile }}
       version: ${{ inputs.version }}
       build_time: ${{ inputs.build_time || '' }}
       use_zram: ${{ inputs.use_zram }}
@@ -242,6 +256,7 @@ jobs:
     secrets: inherit
     with:
       kernelsu_variant: ${{ inputs.kernelsu_variant }}
+      profile: ${{ inputs.profile }}
       version: ${{ inputs.version }}
       build_time: ${{ inputs.build_time || '' }}
       use_zram: ${{ inputs.use_zram }}
@@ -578,10 +593,14 @@ jobs:
           echo "KSU_VER=$KSU_VER" >> $GITHUB_ENV
           echo "SUS_VER=$SUS_VER" >> $GITHUB_ENV
 
-          # 功能开关显示
-          echo "LZ4_STATUS=${{ inputs.use_zram && '开启' || '未开启' }}" >> $GITHUB_ENV
-          echo "BBG_STATUS=${{ inputs.use_bbg && '支持' || '不支持' }}" >> $GITHUB_ENV
-          echo "NET_STATUS=${{ inputs.use_networking && '开启' || '未开启' }}" >> $GITHUB_ENV
+          # 功能开关显示（与配置档联动：推荐档下 ZRAM/BBG/网络增强恒开启、KPM 恒关闭）
+          ZRAM_EFF="${{ inputs.profile != '自定义' || inputs.use_zram }}"
+          BBG_EFF="${{ inputs.profile != '自定义' || inputs.use_bbg }}"
+          NET_EFF="${{ inputs.profile != '自定义' || inputs.use_networking }}"
+          KPM_EFF="${{ inputs.profile != '自定义' && 'disabled (配置档=推荐)' || inputs.use_kpm }}"
+          [ "$ZRAM_EFF" = "true" ] && echo "LZ4_STATUS=开启" >> $GITHUB_ENV || echo "LZ4_STATUS=未开启" >> $GITHUB_ENV
+          [ "$BBG_EFF" = "true" ] && echo "BBG_STATUS=支持" >> $GITHUB_ENV || echo "BBG_STATUS=不支持" >> $GITHUB_ENV
+          [ "$NET_EFF" = "true" ] && echo "NET_STATUS=开启" >> $GITHUB_ENV || echo "NET_STATUS=未开启" >> $GITHUB_ENV
           # KPM 状态：与 build.yml 实际执行的步骤保持一致
           #   · 支持集合：SukiSU / BakaSU / Next（这三者才会注入 KernelPatch 宿主）
           #   · 其余变体在构建时会被忽略并输出 warning，这里如实标注
@@ -590,11 +609,11 @@ jobs:
           case "${{ inputs.kernelsu_variant }}" in
             "SukiSU"|"BakaSU"|"Next") KPM_SUPPORTED=true ;;
           esac
-          if [[ "${{ inputs.use_kpm }}" == disabled* ]]; then
+          if [[ "$KPM_EFF" == disabled* ]]; then
             KPM_STATUS="未开启"
           elif [ "$KPM_SUPPORTED" != "true" ]; then
             KPM_STATUS="当前变体不支持（已忽略）"
-          elif [[ "${{ inputs.use_kpm }}" == patched* ]]; then
+          elif [[ "$KPM_EFF" == patched* ]]; then
             KPM_STATUS="支持（与 enabled 等效，宿主已注入）"
           else
             KPM_STATUS="支持（宿主已注入，未实测）"
